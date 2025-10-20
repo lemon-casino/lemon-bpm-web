@@ -1177,8 +1177,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
           >
             {{
               default: () => uniqueOptions.map((item, index) => {
-                const stringValue = String(item.value)
-                // console.log(`渲染选项: 值=[${stringValue}], 标签=[${item.label}]`)
+                // console.log(`渲染选项: 值=[${String(item.value)}], 标签=[${item.label}]`)
                 return (
                   <el-option
                     key={index}
