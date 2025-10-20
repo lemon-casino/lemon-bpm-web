@@ -232,6 +232,26 @@ function isLikelyId(text: string | null | undefined): boolean {
   return result
 }
 
+// 选项请求缓存，避免同一接口被短时间内重复请求
+const OPTIONS_CACHE_TTL = 5 * 60 * 1000 // 5分钟缓存
+const optionsCache = new Map<string, { timestamp: number; data: any }>()
+const pendingOptionsRequest = new Map<string, Promise<any>>()
+
+const buildOptionsCacheKey = (params: {
+  url: string
+  method: string
+  remote: boolean
+  remoteField: string
+  queryParam?: any
+  data?: string
+}) => {
+  const { url, method, remote, remoteField, queryParam, data } = params
+  const normalizedUrl = url || ''
+  const normalizedData = data || ''
+  const normalizedQuery = remote && queryParam !== undefined ? `${remoteField}:${queryParam}` : ''
+  return `${method}|${normalizedUrl}|${normalizedQuery}|${normalizedData}`
+}
+
 export const useApiSelect = (option: ApiSelectProps) => {
   return defineComponent({
     name: option.name,
@@ -315,6 +335,39 @@ export const useApiSelect = (option: ApiSelectProps) => {
           return
         }
 
+        const cacheKey = buildOptionsCacheKey({
+          url: props.url,
+          method: props.method,
+          remote: props.remote,
+          remoteField: props.remoteField,
+          queryParam: queryParam.value,
+          data: props.data
+        })
+
+        // 优先使用缓存数据
+        const cacheEntry = optionsCache.get(cacheKey)
+        if (cacheEntry && Date.now() - cacheEntry.timestamp < OPTIONS_CACHE_TTL) {
+          parseOptions(cacheEntry.data)
+          updateModelValueLabels()
+          isDataLoaded.value = true
+          return
+        }
+
+        // 如果已有相同请求正在进行，等待其完成
+        const pendingRequest = pendingOptionsRequest.get(cacheKey)
+        if (pendingRequest) {
+          try {
+            const cachedResponse = await pendingRequest
+            parseOptions(cachedResponse)
+            updateModelValueLabels()
+            isDataLoaded.value = true
+            return
+          } catch (error) {
+            console.error(`获取选项数据失败:`, error)
+            return
+          }
+        }
+
         // 检查是否应该限制请求
         const requestKey = `${props.url}_all`
         if (requestLimiter.shouldLimit(requestKey)) {
@@ -325,30 +378,43 @@ export const useApiSelect = (option: ApiSelectProps) => {
         requestInProgress.value = true
         loading.value = true
 
-        try {
-          let responseData
-          switch (props.method) {
-            case 'GET':
-              let url: string = props.url
-              if (props.remote) {
-                if (queryParam.value != undefined) {
-                  if (url.includes('?')) {
-                    url = `${url}&${props.remoteField}=${queryParam.value}`
-                  } else {
-                    url = `${url}?${props.remoteField}=${queryParam.value}`
+        const requestPromise = (async () => {
+          try {
+            let responseData
+            switch (props.method) {
+              case 'GET':
+                let url: string = props.url
+                if (props.remote) {
+                  if (queryParam.value != undefined) {
+                    if (url.includes('?')) {
+                      url = `${url}&${props.remoteField}=${queryParam.value}`
+                    } else {
+                      url = `${url}?${props.remoteField}=${queryParam.value}`
+                    }
                   }
                 }
-              }
-              responseData = await request.get({ url: url })
-              break
-            case 'POST':
-              const data: any = jsonParse(props.data)
-              if (props.remote) {
-                data[props.remoteField] = queryParam.value
-              }
-              responseData = await request.post({ url: props.url, data: data })
-              break
+                responseData = await request.get({ url: url })
+                break
+              case 'POST':
+                const data: any = jsonParse(props.data)
+                if (props.remote) {
+                  data[props.remoteField] = queryParam.value
+                }
+                responseData = await request.post({ url: props.url, data: data })
+                break
+            }
+            return responseData
+          } finally {
+            pendingOptionsRequest.delete(cacheKey)
           }
+        })()
+
+        pendingOptionsRequest.set(cacheKey, requestPromise)
+
+        try {
+          const responseData = await requestPromise
+
+          optionsCache.set(cacheKey, { timestamp: Date.now(), data: responseData })
 
           parseOptions(responseData)
 
