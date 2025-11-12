@@ -289,7 +289,6 @@ import { registerComponent } from '@/utils/routerHelper'
 import type { ApiAttrs } from '@form-create/element-ui/types/config'
 import * as ProcessInstanceApi from '@/api/bpm/processInstance'
 import * as UserApi from '@/api/system/user'
-import * as ModelApi from '@/api/bpm/model'
 import * as CommentApi from '@/api/bpm/comment'
 import ProcessInstanceBpmnViewer from './ProcessInstanceBpmnViewer.vue'
 import ProcessInstanceSimpleViewer from './ProcessInstanceSimpleViewer.vue'
@@ -298,7 +297,6 @@ import ProcessInstanceOperationButton from './ProcessInstanceOperationButton.vue
 import ProcessInstanceTimeline from './ProcessInstanceTimeline.vue'
 import CommentDialog from './CommentDialog.vue'
 import MarkdownView from '@/components/MarkdownView/index.vue'
-import { FieldPermissionType } from '@/components/SimpleProcessDesignerV2/src/consts'
 import { TaskStatusEnum } from '@/api/bpm/task'
 import runningSvg from '@/assets/svgs/bpm/running.svg'
 import approveSvg from '@/assets/svgs/bpm/approve.svg'
@@ -414,7 +412,7 @@ const { emit } = useEventBus('processInstance')
 const { sendMessage, sendBroadcast, onMessage } = useWebSocketMessage()
 
 // 管理员相关属性
-const isAdmin = ref(false) // 是否为管理员
+const isAdmin = ref(false) // 是否为管理员（暂不处理字段权限，默认仅回显）
 
 // 移动端按钮区域控制
 const isMobile = ref(false) // 是否为移动端
@@ -500,42 +498,6 @@ const getApprovalDetail = async (isFromRefresh = false) => {
             queueFormApiTask(api => {
               api.refresh()
               console.log('表单内容已更新')
-
-              // 获取表单字段权限并重新设置
-              const formFieldsPermission = data.formFieldsPermission
-              if (formFieldsPermission) {
-                // 清空可编辑字段列表
-                writableFields.splice(0)
-
-                // 重置所有字段为只读
-                api.btn.show(false)
-                api.resetBtn.show(false)
-                //@ts-ignore
-                api.disabled(true)
-
-                // 先将所有字段设为可见，解决字段隐藏后无法重新显示的问题
-                if (detailForm.value.rule && detailForm.value.rule.length > 0) {
-                  detailForm.value.rule.forEach(rule => {
-                    if (rule.field) {
-                      //@ts-ignore
-                      api.hidden(false, rule.field)
-                    }
-                  })
-                }
-
-                // 设置字段权限
-                if (isAdmin.value) {
-                  enableAllFieldsForAdmin(api)
-                } else {
-                  Object.keys(formFieldsPermission).forEach((item) => {
-                    setFieldPermission(item, formFieldsPermission[item], api)
-                  })
-                }
-
-                // 打印表单权限信息（刷新后）
-                console.log('刷新后的表单权限信息:')
-                printFormFieldsPermission(formFieldsPermission)
-              }
             })
             scheduleFormRender()
           }
@@ -558,9 +520,7 @@ const getApprovalDetail = async (isFromRefresh = false) => {
 
     // 设置表单信息
     if (processDefinition.value.formType === BpmModelFormType.NORMAL) {
-      // 获取表单字段权限
-      const formFieldsPermission = data.formFieldsPermission
-      // 清空可编辑字段为空
+      // 清空可编辑字段为空，保持表单仅用于回显
       writableFields.splice(0)
       if (detailForm.value.rule?.length > 0) {
         // 避免刷新 form-create 显示不了
@@ -579,20 +539,6 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           api.resetBtn.show(false)
           //@ts-ignore
           api.disabled(true)
-
-          // 判断是否是管理员，如果是管理员，允许所有表单字段可编辑
-          if (isAdmin.value) {
-            enableAllFieldsForAdmin(api)
-          }
-          // 否则正常设置表单字段权限
-          else if (formFieldsPermission) {
-            Object.keys(data.formFieldsPermission).forEach((item) => {
-              setFieldPermission(item, formFieldsPermission[item], api)
-            })
-          }
-
-          // 打印表单字段权限信息
-          printFormFieldsPermission(formFieldsPermission)
         })
       })
       scheduleFormRender()
@@ -680,147 +626,10 @@ const loadTaskRecords = async (force = false) => {
 // 审批节点信息
 const activityNodes = ref<ProcessInstanceApi.ApprovalNodeInfo[]>([])
 /**
- * 设置表单权限
- */
-const applyFieldPermission = (api: ApiAttrs, field: string, permission: string) => {
-  if (permission === FieldPermissionType.READ) {
-    //@ts-ignore
-    api.disabled(true, field)
-  }
-  if (permission === FieldPermissionType.WRITE) {
-    //@ts-ignore
-    api.disabled(false, field)
-    // 加入可以编辑的字段
-    writableFields.push(field)
-  }
-  if (permission === FieldPermissionType.NONE) {
-    //@ts-ignore
-    api.hidden(true, field)
-  }
-}
-
-const setFieldPermission = (field: string, permission: string, api?: ApiAttrs) => {
-  if (api) {
-    applyFieldPermission(api, field, permission)
-    return
-  }
-  if (fApi.value) {
-    applyFieldPermission(fApi.value, field, permission)
-  } else {
-    queueFormApiTask(instance => applyFieldPermission(instance, field, permission))
-  }
-}
-
-/**
- * 打印表单字段权限信息
- */
-const printFormFieldsPermission = (formFieldsPermission: Record<string, string>) => {
-  if (!formFieldsPermission) {
-    console.log('表单字段权限为空')
-    return
-  }
-  
-  console.log('======== 表单字段权限信息 ========')
-  const permissionTypeMap = {
-    [FieldPermissionType.READ]: '只读',
-    [FieldPermissionType.WRITE]: '可编辑',
-    [FieldPermissionType.NONE]: '隐藏'
-  }
-  
-  // 按权限类型分组显示
-  const groupedPermissions = {
-    '可编辑': [] as string[],
-    '只读': [] as string[],
-    '隐藏': [] as string[]
-  }
-  
-  Object.entries(formFieldsPermission).forEach(([field, permission]) => {
-    const permissionName = permissionTypeMap[permission] || '未知权限'
-    groupedPermissions[permissionName].push(field)
-    console.log(`字段: ${field}, 权限: ${permissionName} (${permission})`)
-  })
-  
-  console.log('\n按权限类型分组:')
-  console.log('可编辑字段:', groupedPermissions['可编辑'].join(', ') || '无')
-  console.log('只读字段:', groupedPermissions['只读'].join(', ') || '无')
-  console.log('隐藏字段:', groupedPermissions['隐藏'].join(', ') || '无')
-  console.log('================================')
-}
-
-/**
- * 管理员拥有所有表单字段编辑权限
- */
-const enableAllFieldsForAdmin = (api?: ApiAttrs) => {
-  if (!detailForm.value.rule) return
-
-  const run = (targetApi: ApiAttrs) => {
-    // 清空之前的可编辑字段列表
-    writableFields.splice(0)
-
-    // 创建一个对象来存储管理员权限信息
-    const adminPermissions: Record<string, string> = {}
-
-    // 遍历所有表单字段，设置为可编辑状态
-    detailForm.value.rule.forEach(rule => {
-      if (rule.field) {
-        //@ts-ignore
-        targetApi.disabled(false, rule.field)
-        // 添加到可编辑字段列表中
-        writableFields.push(rule.field)
-        // 记录权限为"可编辑"
-        adminPermissions[rule.field] = FieldPermissionType.WRITE
-      }
-    })
-
-    // 打印管理员模式下的权限信息
-    console.log('管理员模式：所有字段均设为可编辑')
-    printFormFieldsPermission(adminPermissions)
-  }
-
-  if (api) {
-    run(api)
-  } else if (fApi.value) {
-    run(fApi.value)
-  } else {
-    queueFormApiTask(instance => run(instance))
-  }
-}
-
-/**
- * 检查当前用户是否是管理员
- */
-const checkAdminStatus = async () => {
-  try {
-    // 获取URL查询参数
-    const processInstanceId = props.id;
-    console.log('检查管理员状态 - 流程实例ID:', processInstanceId);
-
-    
-    // 调用API检查是否是管理员
-    if (processInstanceId) {
-      const res = await ModelApi.modelManager(processInstanceId);
-      console.log('管理员检查API返回结果:', res);
-      
-      // 只有API明确返回true时才设置为管理员
-      isAdmin.value = res === true;
-      console.log('最终管理员状态:', isAdmin.value);
-    } else {
-      isAdmin.value = false;
-    }
-  } catch (error) {
-    console.error('获取管理员状态出错:', error);
-    isAdmin.value = false;
-  }
-}
-
-/**
  * 操作成功后刷新
  */
 const refresh = async () => {
   console.log('开始刷新...')
-  // 重新检查管理员状态，确保按钮显示正确
-  await checkAdminStatus()
-  console.log('刷新时管理员状态检查完成，isAdmin:', isAdmin.value)
 
   // 获取当前用户信息
   const userStore = useUserStore()
@@ -991,13 +800,10 @@ watch(
 const userOptions = ref<UserApi.UserVO[]>([]) // 用户列表
 onMounted(async () => {
   console.log('index.vue 组件挂载')
-  
+
   // 初始化移动端检测
   checkIsMobile()
   window.addEventListener('resize', handleResize)
-  
-  await checkAdminStatus() // 检查管理员状态
-  console.log('管理员状态检查完成，isAdmin:', isAdmin.value)
   await getDetail()
   // 获得用户列表
   userOptions.value = await UserApi.getSimpleUserList()
