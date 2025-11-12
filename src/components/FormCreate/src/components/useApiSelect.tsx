@@ -4,6 +4,10 @@ import { ApiSelectProps } from '@/components/FormCreate/src/type'
 import { jsonParse } from '@/utils'
 import { Fragment } from 'vue'
 
+// 接口响应缓存，避免同一接口被多个组件重复请求
+const responseCache = new Map<string, any>()
+const pendingResponseCache = new Map<string, Promise<any>>()
+
 // 添加本地存储工具
 const CACHE_KEY_PREFIX = 'api_select_label_cache_'
 
@@ -308,10 +312,60 @@ export const useApiSelect = (option: ApiSelectProps) => {
       const autoReloadTimer = ref<number | null>(null) // 自动重新加载定时器
       const requestInProgress = ref(false) // 请求进行中标记，防止并发请求
 
+      // 构建缓存键，考虑请求方式、URL、请求体和远程查询参数
+      const buildCacheKey = (remoteQuery?: any) => {
+        const method = (props.method || 'GET').toUpperCase()
+        const url = props.url || ''
+        const dataPart = method === 'POST' ? `::${props.data || ''}` : ''
+        if (!props.remote) {
+          return `${method}::${url}${dataPart}`
+        }
+        const queryValue =
+          remoteQuery !== undefined && remoteQuery !== null ? String(remoteQuery) : ''
+        const remotePart = `::remote:${props.remoteField || 'label'}=${queryValue}`
+        return `${method}::${url}${dataPart}${remotePart}`
+      }
+
       // 获取选项数据的函数
       const getOptions = async () => {
-        // 如果URL为空或者已有请求在进行中，直接返回
-        if (isEmpty(props.url) || requestInProgress.value) {
+        // 如果URL为空直接返回
+        if (isEmpty(props.url)) {
+          return
+        }
+
+        const cacheKey = buildCacheKey(props.remote ? queryParam.value : undefined)
+
+        // 优先使用已经缓存的响应数据
+        if (responseCache.has(cacheKey)) {
+          const cachedResponse = responseCache.get(cacheKey)
+          parseOptions(cachedResponse)
+          if (options.value && options.value.length > 0) {
+            labelCache.saveLabels(props.url, options.value)
+          }
+          updateModelValueLabels()
+          isDataLoaded.value = true
+          return
+        }
+
+        // 如果已经有相同请求在进行中，则等待其完成
+        if (pendingResponseCache.has(cacheKey)) {
+          loading.value = true
+          try {
+            await pendingResponseCache.get(cacheKey)
+            const cachedResponse = responseCache.get(cacheKey)
+            if (cachedResponse) {
+              parseOptions(cachedResponse)
+              if (options.value && options.value.length > 0) {
+                labelCache.saveLabels(props.url, options.value)
+              }
+              updateModelValueLabels()
+              isDataLoaded.value = true
+            }
+          } catch (error) {
+            console.error(`获取选项数据失败:`, error)
+          } finally {
+            loading.value = false
+          }
           return
         }
 
@@ -322,10 +376,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
           return
         }
 
-        requestInProgress.value = true
-        loading.value = true
-
-        try {
+        const fetchPromise = (async () => {
           let responseData
           switch (props.method) {
             case 'GET':
@@ -348,8 +399,19 @@ export const useApiSelect = (option: ApiSelectProps) => {
               }
               responseData = await request.post({ url: props.url, data: data })
               break
+            default:
+              responseData = await request.get({ url: props.url })
           }
+          return responseData
+        })()
 
+        pendingResponseCache.set(cacheKey, fetchPromise)
+        requestInProgress.value = true
+        loading.value = true
+
+        try {
+          const responseData = await fetchPromise
+          responseCache.set(cacheKey, responseData)
           parseOptions(responseData)
 
           // 将解析后的选项保存到本地缓存
@@ -366,6 +428,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
           console.error(`获取选项数据失败:`, error)
           requestLimiter.recordFailure(requestKey)
         } finally {
+          pendingResponseCache.delete(cacheKey)
           requestInProgress.value = false
           loading.value = false
         }
