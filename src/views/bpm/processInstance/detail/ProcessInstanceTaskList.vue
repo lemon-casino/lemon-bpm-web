@@ -1,5 +1,5 @@
 <template>
-  <div class="task-list-container">
+  <div class="task-list-container" v-loading="props.loading || internalLoading">
     <!-- 桌面端表格视图 -->
     <el-table :data="tasks" border header-cell-class-name="table-header-gray" class="desktop-table">
       <el-table-column label="审批节点" prop="name" min-width="120" align="center" />
@@ -136,6 +136,7 @@ const props = defineProps({
   id: propTypes.string // 流程实例的编号
 })
 const tasks = ref([]) // 流程任务的数组
+const internalLoading = ref(false)
 
 /** 查看表单 */
 const fApi = ref<ApiAttrs>() // form-create 的 API 操作类
@@ -157,15 +158,24 @@ const handleFormDetail = async (row: any) => {
   fApi.value?.fapi?.disabled(true)
 }
 
-/** 只有 loading 完成时，才去加载流程列表 */
-watch(
-  () => props.loading,
-  async (value) => {
-    if (value) {
-      tasks.value = await TaskApi.getTaskListByProcessInstanceId(props.id)
-    }
+const loadTasks = async () => {
+  if (!props.id) {
+    return
   }
-)
+  internalLoading.value = true
+  try {
+    tasks.value = await TaskApi.getTaskListByProcessInstanceId(props.id)
+  } catch (error) {
+    console.error('加载流转记录失败:', error)
+    throw error
+  } finally {
+    internalLoading.value = false
+  }
+}
+
+defineExpose({
+  reload: loadTasks
+})
 </script>
 
 <style lang="scss" scoped>

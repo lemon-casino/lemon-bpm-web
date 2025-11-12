@@ -109,12 +109,16 @@
                       <!-- 情况一：流程表单 -->
                       <el-col v-if="processDefinition?.formType === BpmModelFormType.NORMAL">
                         <form-create
+                          v-if="shouldRenderForm"
                           v-model="detailForm.value"
                           v-model:api="fApi"
                           :option="detailForm.option"
                           :rule="detailForm.rule"
                           class="form-component"
                         />
+                        <div v-else class="form-create-skeleton">
+                          <el-skeleton animated :rows="6" />
+                        </div>
                       </el-col>
                       <!-- 情况二：业务表单 -->
                       <div v-if="processDefinition?.formType === BpmModelFormType.CUSTOM">
@@ -208,18 +212,18 @@
             <div class="form-scroll-area">
               <!-- 流程图容器，直接使用组件，避免多余嵌套 -->
               <ProcessInstanceSimpleViewer
-                v-show="
+                v-if="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.SIMPLE
                 "
-                :loading="processInstanceLoading"
+                :loading="diagramLoading"
                 :model-view="processModelView"
                 class="process-viewer-component"
               />
               <ProcessInstanceBpmnViewer
-                v-show="
+                v-else-if="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.BPMN
                 "
-                :loading="processInstanceLoading"
+                :loading="diagramLoading"
                 :model-view="processModelView"
                 class="process-viewer-component"
               />
@@ -230,7 +234,11 @@
           <el-tab-pane label="流转记录" name="record">
             <div class="form-scroll-area">
               <el-scrollbar>
-                <ProcessInstanceTaskList :loading="processInstanceLoading" :id="id" />
+                <ProcessInstanceTaskList
+                  ref="taskListRef"
+                  :loading="recordLoading"
+                  :id="id"
+                />
               </el-scrollbar>
             </div>
           </el-tab-pane>
@@ -281,7 +289,6 @@ import { registerComponent } from '@/utils/routerHelper'
 import type { ApiAttrs } from '@form-create/element-ui/types/config'
 import * as ProcessInstanceApi from '@/api/bpm/processInstance'
 import * as UserApi from '@/api/system/user'
-import * as ModelApi from '@/api/bpm/model'
 import * as CommentApi from '@/api/bpm/comment'
 import ProcessInstanceBpmnViewer from './ProcessInstanceBpmnViewer.vue'
 import ProcessInstanceSimpleViewer from './ProcessInstanceSimpleViewer.vue'
@@ -290,7 +297,6 @@ import ProcessInstanceOperationButton from './ProcessInstanceOperationButton.vue
 import ProcessInstanceTimeline from './ProcessInstanceTimeline.vue'
 import CommentDialog from './CommentDialog.vue'
 import MarkdownView from '@/components/MarkdownView/index.vue'
-import { FieldPermissionType } from '@/components/SimpleProcessDesignerV2/src/consts'
 import { TaskStatusEnum } from '@/api/bpm/task'
 import runningSvg from '@/assets/svgs/bpm/running.svg'
 import approveSvg from '@/assets/svgs/bpm/approve.svg'
@@ -316,6 +322,11 @@ const processInstance = ref<any>({}) // 流程实例
 const processDefinition = ref<any>({}) // 流程定义
 const processModelView = ref<any>({}) // 流程模型视图
 const operationButtonRef = ref() // 操作按钮组件 ref
+const taskListRef = ref()
+const diagramLoading = ref(false)
+const recordLoading = ref(false)
+const hasLoadedDiagram = ref(false)
+const hasLoadedRecords = ref(false)
 const auditIconsMap = {
   [TaskStatusEnum.RUNNING]: runningSvg,
   [TaskStatusEnum.APPROVE]: approveSvg,
@@ -330,6 +341,68 @@ const detailForm = ref({
   option: {},
   value: {}
 }) // 流程实例的表单详情
+const shouldRenderForm = ref(false)
+const formApiTaskQueue: Array<(api: ApiAttrs) => void> = []
+
+const queueFormApiTask = (task: (api: ApiAttrs) => void) => {
+  if (!task) {
+    return
+  }
+  if (fApi.value) {
+    task(fApi.value)
+  } else {
+    formApiTaskQueue.push(task)
+  }
+}
+
+const flushFormApiTasks = (api?: ApiAttrs) => {
+  if (!api || formApiTaskQueue.length === 0) {
+    return
+  }
+  const pendingTasks = formApiTaskQueue.splice(0)
+  pendingTasks.forEach(task => {
+    try {
+      task(api)
+    } catch (error) {
+      console.error('执行延迟的表单操作失败:', error)
+    }
+  })
+}
+
+watch(
+  () => fApi.value,
+  api => {
+    flushFormApiTasks(api)
+  }
+)
+
+const scheduleFormRender = () => {
+  if (shouldRenderForm.value) {
+    return
+  }
+  const mountForm = () => {
+    shouldRenderForm.value = true
+  }
+  if (typeof window !== 'undefined') {
+    const idle = (window as typeof window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
+    if (typeof idle === 'function') {
+      idle(mountForm)
+    } else {
+      requestAnimationFrame(mountForm)
+    }
+  } else {
+    mountForm()
+  }
+}
+
+watch(
+  () => detailForm.value.rule,
+  rule => {
+    if (Array.isArray(rule) && rule.length > 0) {
+      scheduleFormRender()
+    }
+  }
+)
 
 const writableFields: Array<string> = [] // 表单可以编辑的字段
 
@@ -339,7 +412,7 @@ const { emit } = useEventBus('processInstance')
 const { sendMessage, sendBroadcast, onMessage } = useWebSocketMessage()
 
 // 管理员相关属性
-const isAdmin = ref(false) // 是否为管理员
+const isAdmin = ref(false) // 是否为管理员（暂不处理字段权限，默认仅回显）
 
 // 移动端按钮区域控制
 const isMobile = ref(false) // 是否为移动端
@@ -348,7 +421,8 @@ const shouldHideButtonContainer = ref(false) // 是否应该隐藏按钮容器
 /** 获得详情 */
 const getDetail = async (isFromRefresh = false) => {
   await getApprovalDetail(isFromRefresh)
-  await getProcessModelView()
+  void loadProcessModelView(true)
+  void loadTaskRecords(true)
 }
 
 /** 加载流程实例 */
@@ -418,53 +492,19 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           console.log('开始更新表单内容')
           
           // 刷新表单内容
-          if (processDefinition.value.formType === BpmModelFormType.NORMAL && fApi.value) {
+          if (processDefinition.value.formType === BpmModelFormType.NORMAL) {
             // 直接更新表单值
             detailForm.value.value = processInstance.value.formVariables
-            // 刷新表单
-            fApi.value.refresh()
-            console.log('表单内容已更新')
-            
-            // 获取表单字段权限并重新设置
-            const formFieldsPermission = data.formFieldsPermission
-            if (formFieldsPermission) {
-              // 清空可编辑字段列表
-              writableFields.splice(0)
-              
-              // 重置所有字段为只读
-              fApi.value?.btn.show(false)
-              fApi.value?.resetBtn.show(false)
-              //@ts-ignore
-              fApi.value?.disabled(true)
-              
-              // 先将所有字段设为可见，解决字段隐藏后无法重新显示的问题
-              if (detailForm.value.rule && detailForm.value.rule.length > 0) {
-                detailForm.value.rule.forEach(rule => {
-                  if (rule.field) {
-                    //@ts-ignore
-                    fApi.value?.hidden(false, rule.field)
-                  }
-                })
-              }
-              
-              // 设置字段权限
-              if (isAdmin.value) {
-                enableAllFieldsForAdmin()
-              } else {
-                Object.keys(formFieldsPermission).forEach((item) => {
-                  setFieldPermission(item, formFieldsPermission[item])
-                })
-              }
-              
-              // 打印表单权限信息（刷新后）
-              console.log('刷新后的表单权限信息:')
-              printFormFieldsPermission(formFieldsPermission)
-            }
+            queueFormApiTask(api => {
+              api.refresh()
+              console.log('表单内容已更新')
+            })
+            scheduleFormRender()
           }
-          
+
           // 更新流程图
           console.log('开始更新流程图')
-          getProcessModelView().then(() => {
+          loadProcessModelView(true).then(() => {
             console.log('流程图已更新')
           }).catch(error => {
             console.error('流程图更新失败:', error)
@@ -475,12 +515,12 @@ const getApprovalDetail = async (isFromRefresh = false) => {
     
     processInstance.value = data.processInstance
     processDefinition.value = data.processDefinition
+    hasLoadedDiagram.value = false
+    hasLoadedRecords.value = false
 
     // 设置表单信息
     if (processDefinition.value.formType === BpmModelFormType.NORMAL) {
-      // 获取表单字段权限
-      const formFieldsPermission = data.formFieldsPermission
-      // 清空可编辑字段为空
+      // 清空可编辑字段为空，保持表单仅用于回显
       writableFields.splice(0)
       if (detailForm.value.rule?.length > 0) {
         // 避免刷新 form-create 显示不了
@@ -494,25 +534,14 @@ const getApprovalDetail = async (isFromRefresh = false) => {
         )
       }
       nextTick().then(() => {
-        fApi.value?.btn.show(false)
-        fApi.value?.resetBtn.show(false)
-        //@ts-ignore
-        fApi.value?.disabled(true)
-        
-        // 判断是否是管理员，如果是管理员，允许所有表单字段可编辑
-        if (isAdmin.value) {
-          enableAllFieldsForAdmin()
-        } 
-        // 否则正常设置表单字段权限
-        else if (formFieldsPermission) {
-          Object.keys(data.formFieldsPermission).forEach((item) => {
-            setFieldPermission(item, formFieldsPermission[item])
-          })
-        }
-        
-        // 打印表单字段权限信息
-        printFormFieldsPermission(formFieldsPermission)
+        queueFormApiTask(api => {
+          api.btn.show(false)
+          api.resetBtn.show(false)
+          //@ts-ignore
+          api.disabled(true)
+        })
       })
+      scheduleFormRender()
     } else {
       // 注意：data.processDefinition.formCustomViewPath 是组件的全路径，例如说：/crm/contract/detail/index.vue
       BusinessFormComponent.value = registerComponent(data.processDefinition.formCustomViewPath)
@@ -530,150 +559,77 @@ const getApprovalDetail = async (isFromRefresh = false) => {
 }
 
 /** 获取流程模型视图*/
-const getProcessModelView = async () => {
-  console.log('开始获取流程模型视图')
-  if (BpmModelType.BPMN === processDefinition.value?.modelType) {
-    // 重置，解决 BPMN 流程图刷新不会重新渲染问题
-    processModelView.value = {
-      bpmnXml: ''
-    }
-    console.log('重置 BPMN 流程图')
+const loadProcessModelView = async (force = false) => {
+  if (!props.id) {
+    return
   }
-  // 请求BPMN模型视图数据 
-  // 注：如果出现"failed to import <bpmn:SequenceFlow /> Error: targetRef not specified"错误
-  // 已在ProcessViewer组件中添加自动修复处理，会自动移除无效的连线并继续显示流程图
-  console.log('请求流程实例 BPMN 模型视图，ID:', props.id)
-  const data = await ProcessInstanceApi.getProcessInstanceBpmnModelView(props.id)
-  if (data) {
-    processModelView.value = data
-    console.log('流程模型视图数据已更新')
-  } else {
-    console.log('未获取到流程模型视图数据')
+  if (diagramLoading.value) {
+    return
+  }
+  if (!force && hasLoadedDiagram.value) {
+    return
+  }
+  diagramLoading.value = true
+  try {
+    console.log('开始获取流程模型视图')
+    if (BpmModelType.BPMN === processDefinition.value?.modelType) {
+      // 重置，解决 BPMN 流程图刷新不会重新渲染问题
+      processModelView.value = {
+        bpmnXml: ''
+      }
+      console.log('重置 BPMN 流程图')
+    }
+    // 请求BPMN模型视图数据
+    // 注：如果出现"failed to import <bpmn:SequenceFlow /> Error: targetRef not specified"错误
+    // 已在ProcessViewer组件中添加自动修复处理，会自动移除无效的连线并继续显示流程图
+    console.log('请求流程实例 BPMN 模型视图，ID:', props.id)
+    const data = await ProcessInstanceApi.getProcessInstanceBpmnModelView(props.id)
+    if (data) {
+      processModelView.value = data
+      hasLoadedDiagram.value = true
+      console.log('流程模型视图数据已更新')
+    } else {
+      console.log('未获取到流程模型视图数据')
+    }
+  } finally {
+    diagramLoading.value = false
+  }
+}
+
+const loadTaskRecords = async (force = false) => {
+  if (!props.id) {
+    return
+  }
+  if (!taskListRef.value) {
+    await nextTick()
+  }
+  if (!taskListRef.value) {
+    return
+  }
+  if (recordLoading.value) {
+    return
+  }
+  if (!force && hasLoadedRecords.value) {
+    return
+  }
+  recordLoading.value = true
+  try {
+    await taskListRef.value.reload()
+    hasLoadedRecords.value = true
+  } catch (error) {
+    console.error('加载流转记录失败:', error)
+  } finally {
+    recordLoading.value = false
   }
 }
 
 // 审批节点信息
 const activityNodes = ref<ProcessInstanceApi.ApprovalNodeInfo[]>([])
 /**
- * 设置表单权限
- */
-const setFieldPermission = (field: string, permission: string) => {
-  if (permission === FieldPermissionType.READ) {
-    //@ts-ignore
-    fApi.value?.disabled(true, field)
-  }
-  if (permission === FieldPermissionType.WRITE) {
-    //@ts-ignore
-    fApi.value?.disabled(false, field)
-    // 加入可以编辑的字段
-    writableFields.push(field)
-  }
-  if (permission === FieldPermissionType.NONE) {
-    //@ts-ignore
-    fApi.value?.hidden(true, field)
-  }
-}
-
-/**
- * 打印表单字段权限信息
- */
-const printFormFieldsPermission = (formFieldsPermission: Record<string, string>) => {
-  if (!formFieldsPermission) {
-    console.log('表单字段权限为空')
-    return
-  }
-  
-  console.log('======== 表单字段权限信息 ========')
-  const permissionTypeMap = {
-    [FieldPermissionType.READ]: '只读',
-    [FieldPermissionType.WRITE]: '可编辑',
-    [FieldPermissionType.NONE]: '隐藏'
-  }
-  
-  // 按权限类型分组显示
-  const groupedPermissions = {
-    '可编辑': [] as string[],
-    '只读': [] as string[],
-    '隐藏': [] as string[]
-  }
-  
-  Object.entries(formFieldsPermission).forEach(([field, permission]) => {
-    const permissionName = permissionTypeMap[permission] || '未知权限'
-    groupedPermissions[permissionName].push(field)
-    console.log(`字段: ${field}, 权限: ${permissionName} (${permission})`)
-  })
-  
-  console.log('\n按权限类型分组:')
-  console.log('可编辑字段:', groupedPermissions['可编辑'].join(', ') || '无')
-  console.log('只读字段:', groupedPermissions['只读'].join(', ') || '无')
-  console.log('隐藏字段:', groupedPermissions['隐藏'].join(', ') || '无')
-  console.log('================================')
-}
-
-/**
- * 管理员拥有所有表单字段编辑权限
- */
-const enableAllFieldsForAdmin = () => {
-  if (!fApi.value || !detailForm.value.rule) return;
-  
-  // 清空之前的可编辑字段列表
-  writableFields.splice(0);
-  
-  // 创建一个对象来存储管理员权限信息
-  const adminPermissions: Record<string, string> = {};
-  
-  // 遍历所有表单字段，设置为可编辑状态
-  detailForm.value.rule.forEach(rule => {
-    if (rule.field) {
-      //@ts-ignore
-      fApi.value.disabled(false, rule.field);
-      // 添加到可编辑字段列表中
-      writableFields.push(rule.field);
-      // 记录权限为"可编辑"
-      adminPermissions[rule.field] = FieldPermissionType.WRITE;
-    }
-  });
-  
-  // 打印管理员模式下的权限信息
-  console.log('管理员模式：所有字段均设为可编辑');
-  printFormFieldsPermission(adminPermissions);
-}
-
-/**
- * 检查当前用户是否是管理员
- */
-const checkAdminStatus = async () => {
-  try {
-    // 获取URL查询参数
-    const processInstanceId = props.id;
-    console.log('检查管理员状态 - 流程实例ID:', processInstanceId);
-
-    
-    // 调用API检查是否是管理员
-    if (processInstanceId) {
-      const res = await ModelApi.modelManager(processInstanceId);
-      console.log('管理员检查API返回结果:', res);
-      
-      // 只有API明确返回true时才设置为管理员
-      isAdmin.value = res === true;
-      console.log('最终管理员状态:', isAdmin.value);
-    } else {
-      isAdmin.value = false;
-    }
-  } catch (error) {
-    console.error('获取管理员状态出错:', error);
-    isAdmin.value = false;
-  }
-}
-
-/**
  * 操作成功后刷新
  */
 const refresh = async () => {
   console.log('开始刷新...')
-  // 重新检查管理员状态，确保按钮显示正确
-  await checkAdminStatus()
-  console.log('刷新时管理员状态检查完成，isAdmin:', isAdmin.value)
 
   // 获取当前用户信息
   const userStore = useUserStore()
@@ -819,17 +775,35 @@ const refresh = async () => {
 /** 当前的Tab */
 const activeTab = ref('form')
 
+watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === 'diagram') {
+      void loadProcessModelView()
+    }
+    if (tab === 'record') {
+      void loadTaskRecords()
+    }
+  }
+)
+
+watch(
+  () => taskListRef.value,
+  (instance) => {
+    if (instance && !hasLoadedRecords.value) {
+      void loadTaskRecords()
+    }
+  }
+)
+
 /** 初始化 */
 const userOptions = ref<UserApi.UserVO[]>([]) // 用户列表
 onMounted(async () => {
   console.log('index.vue 组件挂载')
-  
+
   // 初始化移动端检测
   checkIsMobile()
   window.addEventListener('resize', handleResize)
-  
-  await checkAdminStatus() // 检查管理员状态
-  console.log('管理员状态检查完成，isAdmin:', isAdmin.value)
   await getDetail()
   // 获得用户列表
   userOptions.value = await UserApi.getSimpleUserList()
@@ -1743,6 +1717,14 @@ $process-header-height: 194px;
       padding-bottom: 4px;
     }
   }
+}
+
+.form-create-skeleton {
+  padding: 16px 0;
+}
+
+.form-create-skeleton :deep(.el-skeleton__paragraph) {
+  margin-top: 12px;
 }
 
 // 固定底部按钮容器
