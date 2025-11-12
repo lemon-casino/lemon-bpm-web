@@ -546,7 +546,10 @@ const loadProcessModelView = async (force = false) => {
   if (!props.id) {
     return
   }
-  if (!force && (diagramLoading.value || hasLoadedDiagram.value)) {
+  if (diagramLoading.value) {
+    return
+  }
+  if (!force && hasLoadedDiagram.value) {
     return
   }
   diagramLoading.value = true
@@ -586,7 +589,10 @@ const loadTaskRecords = async (force = false) => {
   if (!taskListRef.value) {
     return
   }
-  if (!force && (recordLoading.value || hasLoadedRecords.value)) {
+  if (recordLoading.value) {
+    return
+  }
+  if (!force && hasLoadedRecords.value) {
     return
   }
   recordLoading.value = true
@@ -883,7 +889,7 @@ watch(
   () => taskListRef.value,
   (instance) => {
     if (instance && !hasLoadedRecords.value) {
-      void loadTaskRecords(true)
+      void loadTaskRecords()
     }
   }
 )
