@@ -208,7 +208,7 @@
             <div class="form-scroll-area">
               <!-- 流程图容器，直接使用组件，避免多余嵌套 -->
               <ProcessInstanceSimpleViewer
-                v-show="
+                v-if="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.SIMPLE
                 "
                 :loading="diagramLoading"
@@ -216,7 +216,7 @@
                 class="process-viewer-component"
               />
               <ProcessInstanceBpmnViewer
-                v-show="
+                v-else-if="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.BPMN
                 "
                 :loading="diagramLoading"

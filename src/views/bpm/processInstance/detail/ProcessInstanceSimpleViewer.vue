@@ -4,6 +4,7 @@
     <el-scrollbar class="process-scrollbar">
       <div class="process-canvas">
         <SimpleProcessViewer
+          v-if="shouldRenderViewer"
           :flow-node="simpleModel"
           :tasks="tasks"
           :process-instance="processInstance"
@@ -13,10 +14,11 @@
   </div>
 </template>
 <script lang="ts" setup>
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { propTypes } from '@/utils/propTypes'
 import { TaskStatusEnum } from '@/api/bpm/task'
 import { SimpleFlowNode, NodeType } from '@/components/SimpleProcessDesignerV2/src/consts'
-import { SimpleProcessViewer } from '@/components/SimpleProcessDesignerV2/src/'
+
 defineOptions({ name: 'BpmProcessInstanceSimpleViewer' })
 
 const props = defineProps({
@@ -24,51 +26,75 @@ const props = defineProps({
   modelView: propTypes.object,
   simpleJson: propTypes.string // Simple 模型结构数据 (json 格式)
 })
-const simpleModel = ref<any>({})
+
+const SimpleProcessViewer = defineAsyncComponent(async () => {
+  const module = await import('@/components/SimpleProcessDesignerV2/src/')
+  return module.SimpleProcessViewer
+})
+
+const simpleModel = ref<any>(null)
 // 用户任务
 const tasks = ref([])
 // 流程实例
 const processInstance = ref()
 
+const shouldRenderViewer = computed(() => {
+  if (props.loading) {
+    return false
+  }
+  const model = simpleModel.value
+  if (!model) {
+    return false
+  }
+  return Object.keys(model).length > 0
+})
+
 /** 监控模型视图 包括任务列表、进行中的活动节点编号等 */
 watch(
   () => props.modelView,
-  async (newModelView) => {
-    if (newModelView) {
-      tasks.value = newModelView.tasks
-      processInstance.value = newModelView.processInstance
-      // 已经拒绝的活动节点编号集合，只包括 UserTask
-      const rejectedTaskActivityIds: string[] = newModelView.rejectedTaskActivityIds
-      // 进行中的活动节点编号集合， 只包括 UserTask
-      const unfinishedTaskActivityIds: string[] = newModelView.unfinishedTaskActivityIds
-      // 已经完成的活动节点编号集合， 包括 UserTask、Gateway 等
-      const finishedActivityIds: string[] = newModelView.finishedTaskActivityIds
-      // 已经完成的连线节点编号集合，只包括 SequenceFlow
-      const finishedSequenceFlowActivityIds: string[] = newModelView.finishedSequenceFlowActivityIds
-      setSimpleModelNodeTaskStatus(
-        newModelView.simpleModel,
-        newModelView.processInstance.status,
-        rejectedTaskActivityIds,
-        unfinishedTaskActivityIds,
-        finishedActivityIds,
-        finishedSequenceFlowActivityIds
-      )
-      simpleModel.value = newModelView.simpleModel
+  (newModelView) => {
+    if (!newModelView || !newModelView.simpleModel) {
+      return
     }
+    tasks.value = newModelView.tasks ?? []
+    processInstance.value = newModelView.processInstance
+    // 已经拒绝的活动节点编号集合，只包括 UserTask
+    const rejectedTaskActivityIds: string[] = newModelView.rejectedTaskActivityIds ?? []
+    // 进行中的活动节点编号集合， 只包括 UserTask
+    const unfinishedTaskActivityIds: string[] = newModelView.unfinishedTaskActivityIds ?? []
+    // 已经完成的活动节点编号集合， 包括 UserTask、Gateway 等
+    const finishedActivityIds: string[] = newModelView.finishedTaskActivityIds ?? []
+    // 已经完成的连线节点编号集合，只包括 SequenceFlow
+    const finishedSequenceFlowActivityIds: string[] = newModelView.finishedSequenceFlowActivityIds ?? []
+    setSimpleModelNodeTaskStatus(
+      newModelView.simpleModel,
+      newModelView.processInstance?.status,
+      rejectedTaskActivityIds,
+      unfinishedTaskActivityIds,
+      finishedActivityIds,
+      finishedSequenceFlowActivityIds
+    )
+    simpleModel.value = newModelView.simpleModel
   }
 )
 /** 监控模型结构数据 */
 watch(
   () => props.simpleJson,
-  async (value) => {
-    if (value) {
+  (value) => {
+    if (!value) {
+      return
+    }
+    try {
       simpleModel.value = JSON.parse(value)
+    } catch (error) {
+      console.warn('解析 Simple 流程图模型失败', error)
+      simpleModel.value = null
     }
   }
 )
 const setSimpleModelNodeTaskStatus = (
   simpleModel: SimpleFlowNode | undefined,
-  processStatus: number,
+  processStatus: number | undefined,
   rejectedTaskActivityIds: string[],
   unfinishedTaskActivityIds: string[],
   finishedActivityIds: string[],
