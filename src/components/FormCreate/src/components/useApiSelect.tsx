@@ -12,6 +12,8 @@ const pendingResponseCache = new Map<string, Promise<any>>()
 const CACHE_KEY_PREFIX = 'api_select_label_cache_'
 
 // 缓存持久化工具
+const persistedLabelMap = new Map<string, Map<string, string>>()
+
 const labelCache = {
   // 获取缓存的标签
   getLabel(key: string, value: string | number): string | null {
@@ -27,6 +29,13 @@ const labelCache = {
 
       const cacheKey = `${CACHE_KEY_PREFIX}${safeKey}_${safeValue}`
       const cachedLabel = localStorage.getItem(cacheKey)
+
+      if (cachedLabel) {
+        const mapKey = this._normalizeCacheKey(key)
+        const valueMap = persistedLabelMap.get(mapKey) || new Map<string, string>()
+        valueMap.set(safeValue, cachedLabel)
+        persistedLabelMap.set(mapKey, valueMap)
+      }
 
       console.log(`getLabel: 尝试获取缓存 [${cacheKey}]，结果: ${cachedLabel || '未找到'}`)
       return cachedLabel
@@ -59,6 +68,23 @@ const labelCache = {
       const safeValue = typeof value === 'object' ? JSON.stringify(value) : String(value)
 
       const cacheKey = `${CACHE_KEY_PREFIX}${safeKey}_${safeValue}`
+      const mapKey = safeKey
+      let valueMap = persistedLabelMap.get(mapKey)
+      if (!valueMap) {
+        valueMap = new Map<string, string>()
+        persistedLabelMap.set(mapKey, valueMap)
+      }
+
+      if (valueMap.get(safeValue) === label) {
+        return
+      }
+
+      const storedLabel = localStorage.getItem(cacheKey)
+      if (storedLabel === label) {
+        valueMap.set(safeValue, label)
+        return
+      }
+
       // console.log(`saveLabel: 保存缓存 [${cacheKey}] = [${label}]`)
 
       // 设置缓存，并添加过期时间（7天）
@@ -67,6 +93,8 @@ const labelCache = {
       // 记录缓存时间，用于过期判断
       const timestamp = Date.now()
       localStorage.setItem(`${cacheKey}_time`, String(timestamp))
+
+      valueMap.set(safeValue, label)
     } catch (e) {
       console.error('保存标签缓存失败:', e)
     }
@@ -118,6 +146,7 @@ const labelCache = {
       }
 
       console.log('cleanExpiredCache: 过期缓存清理完成')
+      persistedLabelMap.clear()
     } catch (e) {
       console.error('清理过期缓存失败:', e)
     }
@@ -336,6 +365,16 @@ export const useApiSelect = (option: ApiSelectProps) => {
       }
 
       // 获取选项数据的函数
+      const applyResponseToOptions = (response: any, persistLabels: boolean) => {
+        if (!response) return
+        parseOptions(response)
+        if (persistLabels && options.value && options.value.length > 0) {
+          labelCache.saveLabels(props.url, options.value)
+        }
+        updateModelValueLabels()
+        isDataLoaded.value = true
+      }
+
       const getOptions = async () => {
         // 如果URL为空直接返回
         if (isEmpty(props.url)) {
@@ -346,13 +385,9 @@ export const useApiSelect = (option: ApiSelectProps) => {
 
         // 优先使用已经缓存的响应数据
         if (responseCache.has(cacheKey)) {
+          console.log(`getOptions: 命中缓存 [${cacheKey}]，复用现有数据`)
           const cachedResponse = responseCache.get(cacheKey)
-          parseOptions(cachedResponse)
-          if (options.value && options.value.length > 0) {
-            labelCache.saveLabels(props.url, options.value)
-          }
-          updateModelValueLabels()
-          isDataLoaded.value = true
+          applyResponseToOptions(cachedResponse, false)
           return
         }
 
@@ -363,12 +398,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
             await pendingResponseCache.get(cacheKey)
             const cachedResponse = responseCache.get(cacheKey)
             if (cachedResponse) {
-              parseOptions(cachedResponse)
-              if (options.value && options.value.length > 0) {
-                labelCache.saveLabels(props.url, options.value)
-              }
-              updateModelValueLabels()
-              isDataLoaded.value = true
+              applyResponseToOptions(cachedResponse, false)
             }
           } catch (error) {
             console.error(`获取选项数据失败:`, error)
@@ -384,6 +414,8 @@ export const useApiSelect = (option: ApiSelectProps) => {
           console.log(`接口[${props.url}]请求已被限制，等待一段时间后再试`)
           return
         }
+
+        console.log(`getOptions: 未命中缓存，开始加载所有选项数据 [${cacheKey}]`)
 
         const fetchPromise = (async () => {
           let responseData
@@ -421,15 +453,10 @@ export const useApiSelect = (option: ApiSelectProps) => {
         try {
           const responseData = await fetchPromise
           responseCache.set(cacheKey, responseData)
-          parseOptions(responseData)
-
-          // 将解析后的选项保存到本地缓存
-          if (options.value && options.value.length > 0) {
-            labelCache.saveLabels(props.url, options.value)
-          }
-
-          updateModelValueLabels()
-          isDataLoaded.value = true
+          applyResponseToOptions(responseData, true)
+          console.log(
+            `getOptions: 完成远程加载 [${cacheKey}]，选项数量: ${options.value?.length || 0}`
+          )
 
           // 重置请求失败计数
           requestLimiter.resetFailure(requestKey)
@@ -992,9 +1019,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
         }
 
         // 加载所有选项数据
-        console.log('开始加载所有选项数据...')
         await getOptions()
-        console.log('所有选项数据加载完成')
 
         // 确保modelValue对应的标签已更新
         updateModelValueLabels()
