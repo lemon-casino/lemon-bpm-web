@@ -326,6 +326,15 @@ export const useApiSelect = (option: ApiSelectProps) => {
         return `${method}::${url}${dataPart}${remotePart}`
       }
 
+      const buildSingleValueCacheKey = (id: string | number) => {
+        const method = (props.method || 'GET').toUpperCase()
+        const url = props.url || ''
+        const dataPart = method === 'POST' ? `::${props.data || ''}` : ''
+        const valuePart = encodeURIComponent(String(id))
+        const valueField = props.valueField || 'value'
+        return `${method}::${url}${dataPart}::single::${valueField}=${valuePart}`
+      }
+
       // 获取选项数据的函数
       const getOptions = async () => {
         // 如果URL为空直接返回
@@ -460,9 +469,40 @@ export const useApiSelect = (option: ApiSelectProps) => {
           return false
         }
 
-        if (requestInProgress.value) {
-          console.log('fetchUserInfoById: 已有请求进行中，稍后再试')
+        const singleCacheKey = buildSingleValueCacheKey(safeId)
+
+        const useCachedSingleResult = (result: any) => {
+          if (!result) return false
+          const { label } = result
+          if (label && !isLikelyId(label)) {
+            modelValueLabels.value[safeId] = label
+            labelCache.saveLabel(props.url, safeId, label)
+            createTempOption()
+            return true
+          }
           return false
+        }
+
+        if (responseCache.has(singleCacheKey)) {
+          if (useCachedSingleResult(responseCache.get(singleCacheKey))) {
+            console.log(`fetchUserInfoById: 使用单项缓存数据渲染ID [${safeId}]`)
+            return true
+          }
+        }
+
+        if (pendingResponseCache.has(singleCacheKey)) {
+          console.log(`fetchUserInfoById: 复用进行中的请求 ID=[${safeId}]`)
+          loading.value = true
+          try {
+            const sharedResult = await pendingResponseCache.get(singleCacheKey)
+            if (useCachedSingleResult(sharedResult)) {
+              return true
+            }
+          } catch (error) {
+            console.error('fetchUserInfoById: 等待共享请求失败:', error)
+          } finally {
+            loading.value = false
+          }
         }
 
         // 检查是否应该限制请求
@@ -473,103 +513,97 @@ export const useApiSelect = (option: ApiSelectProps) => {
         }
 
         console.log(`fetchUserInfoById: 开始获取ID为[${safeId}]的用户信息`)
-        requestInProgress.value = true
-        loading.value = true
 
-        try {
+        const fetchPromise = (async () => {
           // 构建获取单个用户信息的请求URL/参数
           let url: string = props.url
           let data: any = {}
           let result: any = null
 
-          // 添加ID过滤参数，通常后端API支持按ID过滤
           if (props.method === 'GET') {
-            // 使用?id=xxx的方式过滤单个用户
-            // 检查URL是否已包含查询参数
             const separator = url.includes('?') ? '&' : '?'
             url = `${url}${separator}${props.valueField}=${encodeURIComponent(safeId)}`
             console.log(`fetchUserInfoById: 发送GET请求 URL=[${url}]`)
             result = await request.get({ url: url })
           } else {
-            // POST方式，在data中添加id过滤
             data = jsonParse(props.data) || {}
             data[props.valueField] = safeId
             console.log(`fetchUserInfoById: 发送POST请求 URL=[${props.url}], 数据=`, data)
             result = await request.post({ url: props.url, data: data })
           }
 
-          // 解析返回结果，查找匹配的用户信息
-          if (result) {
-            console.log(`fetchUserInfoById: 收到响应数据:`, result)
-
-            // 检查是否有data字段，这是标准API返回格式
-            if (result.data !== undefined) {
-              result = result.data
-            } else if (result.records !== undefined) {
-              // 某些API可能使用records作为数据字段
-              result = result.records
-            } else if (result.items !== undefined) {
-              // 某些API可能使用items作为数据字段
-              result = result.items
-            }
-
-            let userInfo = null
-
-            // 如果是数组，查找匹配ID的项
-            if (Array.isArray(result)) {
-              console.log(`fetchUserInfoById: 在数组中查找ID=[${safeId}]的项`)
-              userInfo = result.find((item) => String(item[props.valueField]) === safeId)
-            }
-            // 如果有list属性且为数组，在list中查找
-            else if (result.list && Array.isArray(result.list)) {
-              console.log(`fetchUserInfoById: 在result.list中查找ID=[${safeId}]的项`)
-              userInfo = result.list.find((item) => String(item[props.valueField]) === safeId)
-            }
-            // 如果有rows属性且为数组，在rows中查找（某些API使用rows）
-            else if (result.rows && Array.isArray(result.rows)) {
-              console.log(`fetchUserInfoById: 在result.rows中查找ID=[${safeId}]的项`)
-              userInfo = result.rows.find((item) => String(item[props.valueField]) === safeId)
-            }
-            // 如果只返回单个对象，直接使用
-            else if (
-              typeof result === 'object' &&
-              result !== null &&
-              result[props.valueField] !== undefined &&
-              String(result[props.valueField]) === safeId
-            ) {
-              console.log(`fetchUserInfoById: 响应是单个对象，直接使用`)
-              userInfo = result
-            }
-
-            // 如果找到用户信息，更新缓存和临时选项
-            if (userInfo) {
-              console.log(`fetchUserInfoById: 找到用户信息:`, userInfo)
-
-              // 确保userInfo是有效对象
-              if (typeof userInfo === 'object' && userInfo !== null) {
-                const label = parseExpression(userInfo, String(props.labelField))
-                console.log(`fetchUserInfoById: 解析的标签=[${label}]`)
-
-                if (label && !isLikelyId(label)) {
-                  console.log(`fetchUserInfoById: 标签有效，保存并使用`)
-                  modelValueLabels.value[safeId] = label
-                  // 保存到本地缓存
-                  labelCache.saveLabel(props.url, safeId, label)
-                  // 更新tempOptions
-                  createTempOption()
-
-                  // 重置请求失败计数
-                  requestLimiter.resetFailure(requestKey)
-                  return true
-                } else {
-                  console.log(`fetchUserInfoById: 解析的标签无效或疑似ID，不使用`)
-                }
-              }
-            } else {
-              console.log(`fetchUserInfoById: 未找到匹配的用户信息`)
-            }
-          } else {
+          if (!result) {
             console.log(`fetchUserInfoById: 响应为空或无效`)
+            return null
+          }
+
+          console.log(`fetchUserInfoById: 收到响应数据:`, result)
+
+          if (result.data !== undefined) {
+            result = result.data
+          } else if (result.records !== undefined) {
+            result = result.records
+          } else if (result.items !== undefined) {
+            result = result.items
+          }
+
+          let userInfo = null
+
+          if (Array.isArray(result)) {
+            console.log(`fetchUserInfoById: 在数组中查找ID=[${safeId}]的项`)
+            userInfo = result.find((item) => String(item[props.valueField]) === safeId)
+          } else if (result?.list && Array.isArray(result.list)) {
+            console.log(`fetchUserInfoById: 在result.list中查找ID=[${safeId}]的项`)
+            userInfo = result.list.find((item) => String(item[props.valueField]) === safeId)
+          } else if (result?.rows && Array.isArray(result.rows)) {
+            console.log(`fetchUserInfoById: 在result.rows中查找ID=[${safeId}]的项`)
+            userInfo = result.rows.find((item) => String(item[props.valueField]) === safeId)
+          } else if (
+            typeof result === 'object' &&
+            result !== null &&
+            result[props.valueField] !== undefined &&
+            String(result[props.valueField]) === safeId
+          ) {
+            console.log(`fetchUserInfoById: 响应是单个对象，直接使用`)
+            userInfo = result
+          }
+
+          if (!userInfo) {
+            console.log(`fetchUserInfoById: 未找到匹配的用户信息`)
+            return null
+          }
+
+          console.log(`fetchUserInfoById: 找到用户信息:`, userInfo)
+
+          if (typeof userInfo !== 'object' || userInfo === null) {
+            return null
+          }
+
+          const label = parseExpression(userInfo, String(props.labelField))
+          console.log(`fetchUserInfoById: 解析的标签=[${label}]`)
+
+          if (label && !isLikelyId(label)) {
+            return {
+              label,
+              value: safeId,
+              raw: userInfo
+            }
+          }
+
+          console.log(`fetchUserInfoById: 解析的标签无效或疑似ID，不使用`)
+          return null
+        })()
+
+        pendingResponseCache.set(singleCacheKey, fetchPromise)
+        requestInProgress.value = true
+        loading.value = true
+
+        try {
+          const singleResult = await fetchPromise
+          if (useCachedSingleResult(singleResult)) {
+            responseCache.set(singleCacheKey, singleResult)
+            requestLimiter.resetFailure(requestKey)
+            return true
           }
 
           console.log(`fetchUserInfoById: 请求未能获取有效标签，记录失败`)
@@ -580,6 +614,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
           requestLimiter.recordFailure(requestKey)
           return false
         } finally {
+          pendingResponseCache.delete(singleCacheKey)
           requestInProgress.value = false
           loading.value = false
         }
