@@ -1994,6 +1994,31 @@ const handleCurrentNodeChange = async () => {
   try {
     // 根据选择的当前节点ID获取可退回的节点
     returnList.value = await TaskApi.getTaskListByReturn(adminReturnForm.currentTaskId)
+    returnList.value = [...returnList.value, {
+      "id": null,
+      "name": "结束",
+      "createTime": null,
+      "endTime": null,
+      "durationInMillis": null,
+      "status": null,
+      "reason": null,
+      "ownerUser": null,
+      "assigneeUser": null,
+      "taskDefinitionKey": "EndEvent",
+      "processInstanceId": null,
+      "processInstance": null,
+      "parentTaskId": null,
+      "children": null,
+      "formId": null,
+      "formName": null,
+      "formConf": null,
+      "formFields": null,
+      "formVariables": null,
+      "buttonsSetting": null,
+      "signEnable": null,
+      "reasonRequire": null,
+      "nodeType": null
+    }]
     if (returnList.value.length === 0) {
       message.warning('当前选择的节点没有可退回的节点')
       adminReturnForm.targetTaskDefinitionKey = undefined
