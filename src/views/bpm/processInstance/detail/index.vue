@@ -211,7 +211,7 @@
                 v-show="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.SIMPLE
                 "
-                :loading="processInstanceLoading"
+                :loading="diagramLoading"
                 :model-view="processModelView"
                 class="process-viewer-component"
               />
@@ -219,7 +219,7 @@
                 v-show="
                   processDefinition.modelType && processDefinition.modelType === BpmModelType.BPMN
                 "
-                :loading="processInstanceLoading"
+                :loading="diagramLoading"
                 :model-view="processModelView"
                 class="process-viewer-component"
               />
@@ -230,7 +230,11 @@
           <el-tab-pane label="流转记录" name="record">
             <div class="form-scroll-area">
               <el-scrollbar>
-                <ProcessInstanceTaskList :loading="processInstanceLoading" :id="id" />
+                <ProcessInstanceTaskList
+                  ref="taskListRef"
+                  :loading="recordLoading"
+                  :id="id"
+                />
               </el-scrollbar>
             </div>
           </el-tab-pane>
@@ -316,6 +320,11 @@ const processInstance = ref<any>({}) // 流程实例
 const processDefinition = ref<any>({}) // 流程定义
 const processModelView = ref<any>({}) // 流程模型视图
 const operationButtonRef = ref() // 操作按钮组件 ref
+const taskListRef = ref()
+const diagramLoading = ref(false)
+const recordLoading = ref(false)
+const hasLoadedDiagram = ref(false)
+const hasLoadedRecords = ref(false)
 const auditIconsMap = {
   [TaskStatusEnum.RUNNING]: runningSvg,
   [TaskStatusEnum.APPROVE]: approveSvg,
@@ -348,7 +357,8 @@ const shouldHideButtonContainer = ref(false) // 是否应该隐藏按钮容器
 /** 获得详情 */
 const getDetail = async (isFromRefresh = false) => {
   await getApprovalDetail(isFromRefresh)
-  await getProcessModelView()
+  void loadProcessModelView(true)
+  void loadTaskRecords(true)
 }
 
 /** 加载流程实例 */
@@ -464,7 +474,7 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           
           // 更新流程图
           console.log('开始更新流程图')
-          getProcessModelView().then(() => {
+          loadProcessModelView(true).then(() => {
             console.log('流程图已更新')
           }).catch(error => {
             console.error('流程图更新失败:', error)
@@ -475,6 +485,8 @@ const getApprovalDetail = async (isFromRefresh = false) => {
     
     processInstance.value = data.processInstance
     processDefinition.value = data.processDefinition
+    hasLoadedDiagram.value = false
+    hasLoadedRecords.value = false
 
     // 设置表单信息
     if (processDefinition.value.formType === BpmModelFormType.NORMAL) {
@@ -530,25 +542,61 @@ const getApprovalDetail = async (isFromRefresh = false) => {
 }
 
 /** 获取流程模型视图*/
-const getProcessModelView = async () => {
-  console.log('开始获取流程模型视图')
-  if (BpmModelType.BPMN === processDefinition.value?.modelType) {
-    // 重置，解决 BPMN 流程图刷新不会重新渲染问题
-    processModelView.value = {
-      bpmnXml: ''
-    }
-    console.log('重置 BPMN 流程图')
+const loadProcessModelView = async (force = false) => {
+  if (!props.id) {
+    return
   }
-  // 请求BPMN模型视图数据 
-  // 注：如果出现"failed to import <bpmn:SequenceFlow /> Error: targetRef not specified"错误
-  // 已在ProcessViewer组件中添加自动修复处理，会自动移除无效的连线并继续显示流程图
-  console.log('请求流程实例 BPMN 模型视图，ID:', props.id)
-  const data = await ProcessInstanceApi.getProcessInstanceBpmnModelView(props.id)
-  if (data) {
-    processModelView.value = data
-    console.log('流程模型视图数据已更新')
-  } else {
-    console.log('未获取到流程模型视图数据')
+  if (!force && (diagramLoading.value || hasLoadedDiagram.value)) {
+    return
+  }
+  diagramLoading.value = true
+  try {
+    console.log('开始获取流程模型视图')
+    if (BpmModelType.BPMN === processDefinition.value?.modelType) {
+      // 重置，解决 BPMN 流程图刷新不会重新渲染问题
+      processModelView.value = {
+        bpmnXml: ''
+      }
+      console.log('重置 BPMN 流程图')
+    }
+    // 请求BPMN模型视图数据
+    // 注：如果出现"failed to import <bpmn:SequenceFlow /> Error: targetRef not specified"错误
+    // 已在ProcessViewer组件中添加自动修复处理，会自动移除无效的连线并继续显示流程图
+    console.log('请求流程实例 BPMN 模型视图，ID:', props.id)
+    const data = await ProcessInstanceApi.getProcessInstanceBpmnModelView(props.id)
+    if (data) {
+      processModelView.value = data
+      hasLoadedDiagram.value = true
+      console.log('流程模型视图数据已更新')
+    } else {
+      console.log('未获取到流程模型视图数据')
+    }
+  } finally {
+    diagramLoading.value = false
+  }
+}
+
+const loadTaskRecords = async (force = false) => {
+  if (!props.id) {
+    return
+  }
+  if (!taskListRef.value) {
+    await nextTick()
+  }
+  if (!taskListRef.value) {
+    return
+  }
+  if (!force && (recordLoading.value || hasLoadedRecords.value)) {
+    return
+  }
+  recordLoading.value = true
+  try {
+    await taskListRef.value.reload()
+    hasLoadedRecords.value = true
+  } catch (error) {
+    console.error('加载流转记录失败:', error)
+  } finally {
+    recordLoading.value = false
   }
 }
 
@@ -818,6 +866,27 @@ const refresh = async () => {
 
 /** 当前的Tab */
 const activeTab = ref('form')
+
+watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === 'diagram') {
+      void loadProcessModelView()
+    }
+    if (tab === 'record') {
+      void loadTaskRecords()
+    }
+  }
+)
+
+watch(
+  () => taskListRef.value,
+  (instance) => {
+    if (instance && !hasLoadedRecords.value) {
+      void loadTaskRecords(true)
+    }
+  }
+)
 
 /** 初始化 */
 const userOptions = ref<UserApi.UserVO[]>([]) // 用户列表
