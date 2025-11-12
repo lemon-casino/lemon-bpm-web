@@ -109,12 +109,16 @@
                       <!-- 情况一：流程表单 -->
                       <el-col v-if="processDefinition?.formType === BpmModelFormType.NORMAL">
                         <form-create
+                          v-if="shouldRenderForm"
                           v-model="detailForm.value"
                           v-model:api="fApi"
                           :option="detailForm.option"
                           :rule="detailForm.rule"
                           class="form-component"
                         />
+                        <div v-else class="form-create-skeleton">
+                          <el-skeleton animated :rows="6" />
+                        </div>
                       </el-col>
                       <!-- 情况二：业务表单 -->
                       <div v-if="processDefinition?.formType === BpmModelFormType.CUSTOM">
@@ -339,6 +343,68 @@ const detailForm = ref({
   option: {},
   value: {}
 }) // 流程实例的表单详情
+const shouldRenderForm = ref(false)
+const formApiTaskQueue: Array<(api: ApiAttrs) => void> = []
+
+const queueFormApiTask = (task: (api: ApiAttrs) => void) => {
+  if (!task) {
+    return
+  }
+  if (fApi.value) {
+    task(fApi.value)
+  } else {
+    formApiTaskQueue.push(task)
+  }
+}
+
+const flushFormApiTasks = (api?: ApiAttrs) => {
+  if (!api || formApiTaskQueue.length === 0) {
+    return
+  }
+  const pendingTasks = formApiTaskQueue.splice(0)
+  pendingTasks.forEach(task => {
+    try {
+      task(api)
+    } catch (error) {
+      console.error('执行延迟的表单操作失败:', error)
+    }
+  })
+}
+
+watch(
+  () => fApi.value,
+  api => {
+    flushFormApiTasks(api)
+  }
+)
+
+const scheduleFormRender = () => {
+  if (shouldRenderForm.value) {
+    return
+  }
+  const mountForm = () => {
+    shouldRenderForm.value = true
+  }
+  if (typeof window !== 'undefined') {
+    const idle = (window as typeof window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
+    if (typeof idle === 'function') {
+      idle(mountForm)
+    } else {
+      requestAnimationFrame(mountForm)
+    }
+  } else {
+    mountForm()
+  }
+}
+
+watch(
+  () => detailForm.value.rule,
+  rule => {
+    if (Array.isArray(rule) && rule.length > 0) {
+      scheduleFormRender()
+    }
+  }
+)
 
 const writableFields: Array<string> = [] // 表单可以编辑的字段
 
@@ -428,50 +494,52 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           console.log('开始更新表单内容')
           
           // 刷新表单内容
-          if (processDefinition.value.formType === BpmModelFormType.NORMAL && fApi.value) {
+          if (processDefinition.value.formType === BpmModelFormType.NORMAL) {
             // 直接更新表单值
             detailForm.value.value = processInstance.value.formVariables
-            // 刷新表单
-            fApi.value.refresh()
-            console.log('表单内容已更新')
-            
-            // 获取表单字段权限并重新设置
-            const formFieldsPermission = data.formFieldsPermission
-            if (formFieldsPermission) {
-              // 清空可编辑字段列表
-              writableFields.splice(0)
-              
-              // 重置所有字段为只读
-              fApi.value?.btn.show(false)
-              fApi.value?.resetBtn.show(false)
-              //@ts-ignore
-              fApi.value?.disabled(true)
-              
-              // 先将所有字段设为可见，解决字段隐藏后无法重新显示的问题
-              if (detailForm.value.rule && detailForm.value.rule.length > 0) {
-                detailForm.value.rule.forEach(rule => {
-                  if (rule.field) {
-                    //@ts-ignore
-                    fApi.value?.hidden(false, rule.field)
-                  }
-                })
+            queueFormApiTask(api => {
+              api.refresh()
+              console.log('表单内容已更新')
+
+              // 获取表单字段权限并重新设置
+              const formFieldsPermission = data.formFieldsPermission
+              if (formFieldsPermission) {
+                // 清空可编辑字段列表
+                writableFields.splice(0)
+
+                // 重置所有字段为只读
+                api.btn.show(false)
+                api.resetBtn.show(false)
+                //@ts-ignore
+                api.disabled(true)
+
+                // 先将所有字段设为可见，解决字段隐藏后无法重新显示的问题
+                if (detailForm.value.rule && detailForm.value.rule.length > 0) {
+                  detailForm.value.rule.forEach(rule => {
+                    if (rule.field) {
+                      //@ts-ignore
+                      api.hidden(false, rule.field)
+                    }
+                  })
+                }
+
+                // 设置字段权限
+                if (isAdmin.value) {
+                  enableAllFieldsForAdmin(api)
+                } else {
+                  Object.keys(formFieldsPermission).forEach((item) => {
+                    setFieldPermission(item, formFieldsPermission[item], api)
+                  })
+                }
+
+                // 打印表单权限信息（刷新后）
+                console.log('刷新后的表单权限信息:')
+                printFormFieldsPermission(formFieldsPermission)
               }
-              
-              // 设置字段权限
-              if (isAdmin.value) {
-                enableAllFieldsForAdmin()
-              } else {
-                Object.keys(formFieldsPermission).forEach((item) => {
-                  setFieldPermission(item, formFieldsPermission[item])
-                })
-              }
-              
-              // 打印表单权限信息（刷新后）
-              console.log('刷新后的表单权限信息:')
-              printFormFieldsPermission(formFieldsPermission)
-            }
+            })
+            scheduleFormRender()
           }
-          
+
           // 更新流程图
           console.log('开始更新流程图')
           loadProcessModelView(true).then(() => {
@@ -506,25 +574,28 @@ const getApprovalDetail = async (isFromRefresh = false) => {
         )
       }
       nextTick().then(() => {
-        fApi.value?.btn.show(false)
-        fApi.value?.resetBtn.show(false)
-        //@ts-ignore
-        fApi.value?.disabled(true)
-        
-        // 判断是否是管理员，如果是管理员，允许所有表单字段可编辑
-        if (isAdmin.value) {
-          enableAllFieldsForAdmin()
-        } 
-        // 否则正常设置表单字段权限
-        else if (formFieldsPermission) {
-          Object.keys(data.formFieldsPermission).forEach((item) => {
-            setFieldPermission(item, formFieldsPermission[item])
-          })
-        }
-        
-        // 打印表单字段权限信息
-        printFormFieldsPermission(formFieldsPermission)
+        queueFormApiTask(api => {
+          api.btn.show(false)
+          api.resetBtn.show(false)
+          //@ts-ignore
+          api.disabled(true)
+
+          // 判断是否是管理员，如果是管理员，允许所有表单字段可编辑
+          if (isAdmin.value) {
+            enableAllFieldsForAdmin(api)
+          }
+          // 否则正常设置表单字段权限
+          else if (formFieldsPermission) {
+            Object.keys(data.formFieldsPermission).forEach((item) => {
+              setFieldPermission(item, formFieldsPermission[item], api)
+            })
+          }
+
+          // 打印表单字段权限信息
+          printFormFieldsPermission(formFieldsPermission)
+        })
       })
+      scheduleFormRender()
     } else {
       // 注意：data.processDefinition.formCustomViewPath 是组件的全路径，例如说：/crm/contract/detail/index.vue
       BusinessFormComponent.value = registerComponent(data.processDefinition.formCustomViewPath)
@@ -611,20 +682,32 @@ const activityNodes = ref<ProcessInstanceApi.ApprovalNodeInfo[]>([])
 /**
  * 设置表单权限
  */
-const setFieldPermission = (field: string, permission: string) => {
+const applyFieldPermission = (api: ApiAttrs, field: string, permission: string) => {
   if (permission === FieldPermissionType.READ) {
     //@ts-ignore
-    fApi.value?.disabled(true, field)
+    api.disabled(true, field)
   }
   if (permission === FieldPermissionType.WRITE) {
     //@ts-ignore
-    fApi.value?.disabled(false, field)
+    api.disabled(false, field)
     // 加入可以编辑的字段
     writableFields.push(field)
   }
   if (permission === FieldPermissionType.NONE) {
     //@ts-ignore
-    fApi.value?.hidden(true, field)
+    api.hidden(true, field)
+  }
+}
+
+const setFieldPermission = (field: string, permission: string, api?: ApiAttrs) => {
+  if (api) {
+    applyFieldPermission(api, field, permission)
+    return
+  }
+  if (fApi.value) {
+    applyFieldPermission(fApi.value, field, permission)
+  } else {
+    queueFormApiTask(instance => applyFieldPermission(instance, field, permission))
   }
 }
 
@@ -667,30 +750,40 @@ const printFormFieldsPermission = (formFieldsPermission: Record<string, string>)
 /**
  * 管理员拥有所有表单字段编辑权限
  */
-const enableAllFieldsForAdmin = () => {
-  if (!fApi.value || !detailForm.value.rule) return;
-  
-  // 清空之前的可编辑字段列表
-  writableFields.splice(0);
-  
-  // 创建一个对象来存储管理员权限信息
-  const adminPermissions: Record<string, string> = {};
-  
-  // 遍历所有表单字段，设置为可编辑状态
-  detailForm.value.rule.forEach(rule => {
-    if (rule.field) {
-      //@ts-ignore
-      fApi.value.disabled(false, rule.field);
-      // 添加到可编辑字段列表中
-      writableFields.push(rule.field);
-      // 记录权限为"可编辑"
-      adminPermissions[rule.field] = FieldPermissionType.WRITE;
-    }
-  });
-  
-  // 打印管理员模式下的权限信息
-  console.log('管理员模式：所有字段均设为可编辑');
-  printFormFieldsPermission(adminPermissions);
+const enableAllFieldsForAdmin = (api?: ApiAttrs) => {
+  if (!detailForm.value.rule) return
+
+  const run = (targetApi: ApiAttrs) => {
+    // 清空之前的可编辑字段列表
+    writableFields.splice(0)
+
+    // 创建一个对象来存储管理员权限信息
+    const adminPermissions: Record<string, string> = {}
+
+    // 遍历所有表单字段，设置为可编辑状态
+    detailForm.value.rule.forEach(rule => {
+      if (rule.field) {
+        //@ts-ignore
+        targetApi.disabled(false, rule.field)
+        // 添加到可编辑字段列表中
+        writableFields.push(rule.field)
+        // 记录权限为"可编辑"
+        adminPermissions[rule.field] = FieldPermissionType.WRITE
+      }
+    })
+
+    // 打印管理员模式下的权限信息
+    console.log('管理员模式：所有字段均设为可编辑')
+    printFormFieldsPermission(adminPermissions)
+  }
+
+  if (api) {
+    run(api)
+  } else if (fApi.value) {
+    run(fApi.value)
+  } else {
+    queueFormApiTask(instance => run(instance))
+  }
 }
 
 /**
@@ -1818,6 +1911,14 @@ $process-header-height: 194px;
       padding-bottom: 4px;
     }
   }
+}
+
+.form-create-skeleton {
+  padding: 16px 0;
+}
+
+.form-create-skeleton :deep(.el-skeleton__paragraph) {
+  margin-top: 12px;
 }
 
 // 固定底部按钮容器

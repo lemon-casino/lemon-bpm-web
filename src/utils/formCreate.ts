@@ -1,7 +1,7 @@
 /**
  * 针对 https://github.com/xaboy/form-create-designer 封装的工具类
  */
-import { isRef } from 'vue'
+import { isRef, markRaw } from 'vue'
 
 // 编码表单 Conf
 export const encodeConf = (designerRef: object) => {
@@ -48,9 +48,9 @@ export const setConfAndFields2 = (
     detailPreview = detailPreview.value
   }
   // @ts-ignore
-  detailPreview.option = JSON.parse(conf)
+  detailPreview.option = markRaw(JSON.parse(conf))
   // @ts-ignore
-  detailPreview.rule = decodeFields(fields)
+  detailPreview.rule = markRaw(decodeFields(fields))
   if (value) {
     // @ts-ignore
     detailPreview.value = value
