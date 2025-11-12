@@ -107,6 +107,32 @@ const labelCache = {
       return
     }
 
+    const safeKey = this._normalizeCacheKey(key)
+    const valueMap = persistedLabelMap.get(safeKey)
+
+    let shouldPersist = !valueMap
+
+    if (!shouldPersist) {
+      for (const item of items) {
+        if (!item?.value || !item?.label || isLikelyId(item.label)) {
+          continue
+        }
+
+        const safeValue =
+          typeof item.value === 'object' ? JSON.stringify(item.value) : String(item.value)
+
+        if (valueMap?.get(safeValue) !== item.label) {
+          shouldPersist = true
+          break
+        }
+      }
+    }
+
+    if (!shouldPersist) {
+      console.log(`saveLabels: 缓存 [${safeKey}] 已包含全部标签，跳过批量保存`)
+      return
+    }
+
     console.log(`saveLabels: 批量保存 ${items.length} 个标签到缓存`)
 
     items.forEach((item) => {
