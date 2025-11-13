@@ -333,6 +333,20 @@ const detailForm = ref({
 
 const writableFields: Array<string> = [] // 表单可以编辑的字段
 
+let formSchemaVersion = 0
+let lastAppliedPermissionsKey: string | null = null
+let lastResolvedPermissionsCache: Record<string, string> | undefined
+
+const resetPermissionCache = () => {
+  lastAppliedPermissionsKey = null
+  lastResolvedPermissionsCache = undefined
+}
+
+const markFormSchemaChanged = () => {
+  formSchemaVersion += 1
+  resetPermissionCache()
+}
+
 const { emit } = useEventBus('processInstance')
 
 // 使用 WebSocket 消息
@@ -421,8 +435,11 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           if (processDefinition.value.formType === BpmModelFormType.NORMAL && fApi.value) {
             // 直接更新表单值
             detailForm.value.value = processInstance.value.formVariables
+            resetPermissionCache()
             // 刷新表单
             fApi.value.refresh()
+            lastFieldPermissions.clear()
+            markFormSchemaChanged()
             console.log('表单内容已更新')
 
             // 获取表单字段权限并重新设置
@@ -465,6 +482,7 @@ const getApprovalDetail = async (isFromRefresh = false) => {
       if (detailForm.value.rule?.length > 0) {
         // 避免刷新 form-create 显示不了
         detailForm.value.value = processInstance.value.formVariables
+        resetPermissionCache()
       } else {
         setConfAndFields2(
           detailForm,
@@ -473,6 +491,7 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           processInstance.value.formVariables
         )
         lastFieldPermissions.clear()
+        markFormSchemaChanged()
       }
       nextTick().then(() => {
         fApi.value?.btn.show(false)
@@ -591,11 +610,27 @@ const updateFieldPermissionState = (field: string, permission: FieldPermissionTy
   lastFieldPermissions.set(field, permission)
 }
 
+const buildPermissionKey = (formFieldsPermission?: Record<string, string>) => {
+  const permissionSignature = formFieldsPermission
+    ? Object.entries(formFieldsPermission)
+        .sort(([a], [b]) => (a > b ? 1 : -1))
+        .map(([field, permission]) => `${field}:${permission}`)
+        .join('|')
+    : 'none'
+
+  return [formSchemaVersion, isAdmin.value ? 'admin' : 'user', permissionSignature].join('::')
+}
+
 const applyFormFieldPermissions = (
   formFieldsPermission?: Record<string, string>
 ): Record<string, string> | undefined => {
   if (!fApi.value || !detailForm.value.rule) {
     return formFieldsPermission
+  }
+
+  const permissionKey = buildPermissionKey(formFieldsPermission)
+  if (permissionKey === lastAppliedPermissionsKey) {
+    return lastResolvedPermissionsCache
   }
 
   const resolvedPermissions: Record<string, string> = {}
@@ -640,7 +675,13 @@ const applyFormFieldPermissions = (
 
   writableFields.splice(0, writableFields.length, ...nextWritableFields)
 
-  return Object.keys(resolvedPermissions).length > 0 ? resolvedPermissions : formFieldsPermission
+  const finalPermissions =
+    Object.keys(resolvedPermissions).length > 0 ? resolvedPermissions : formFieldsPermission
+
+  lastAppliedPermissionsKey = permissionKey
+  lastResolvedPermissionsCache = finalPermissions
+
+  return finalPermissions
 }
 
 /**
