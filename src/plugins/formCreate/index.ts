@@ -1,35 +1,6 @@
 import type { App } from 'vue'
 // 👇使用 form-create 需额外全局引入 element plus 组件
 import {
-  // ElAutocomplete,
-  // ElButton,
-  // ElCascader,
-  // ElCheckbox,
-  // ElCheckboxButton,
-  // ElCheckboxGroup,
-  // ElCol,
-  // ElColorPicker,
-  // ElDatePicker,
-  // ElDialog,
-  // ElForm,
-  // ElInput,
-  // ElInputNumber,
-  // ElPopover,
-  // ElRadio,
-  // ElRadioButton,
-  // ElRadioGroup,
-  // ElRate,
-  // ElRow,
-  // ElSelect,
-  // ElSlider,
-  // ElSwitch,
-  // ElTimePicker,
-  // ElTooltip,
-  // ElTree,
-  // ElUpload,
-  // ElIcon,
-  // ElProgress,
-  // 以上会由 @form-create/element-ui/auto-import 自动引入
   ElAlert,
   ElTransfer,
   ElAside,
@@ -54,9 +25,7 @@ import {
   ElMessage,
   ElCollapse,
   ElCollapseItem,
-  ElCard,
-  // ElFormItem,
-  // ElOption
+  ElCard
 } from 'element-plus'
 import FcDesigner from '@form-create/designer'
 import formCreate from '@form-create/element-ui'
@@ -64,25 +33,24 @@ import install from '@form-create/element-ui/auto-import'
 
 //======================= 自定义组件 =======================
 import { UploadFile, UploadImg, UploadImgs } from '@/components/UploadFile'
-import { useApiSelect } from '@/components/FormCreate'
+import { createApiSelectComponent } from '@/components/FormCreate'
 import { Editor } from '@/components/Editor'
 import DictSelect from '@/components/FormCreate/src/components/DictSelect.vue'
 
-const UserSelect = useApiSelect({
+const UserSelect = createApiSelectComponent({
   name: 'UserSelect',
   labelField: 'nickname',
   valueField: 'id',
   url: '/system/user/simple-list',
-  method: 'GET',
-  params: {} // 确保不会添加额外参数
+  method: 'GET'
 })
-const DeptSelect = useApiSelect({
+const DeptSelect = createApiSelectComponent({
   name: 'DeptSelect',
   labelField: 'name',
   valueField: 'id',
   url: '/system/dept/simple-list'
 })
-const ApiSelect = useApiSelect({
+const ApiSelect = createApiSelectComponent({
   name: 'ApiSelect'
 })
 
@@ -109,8 +77,6 @@ const components = [
   ElMenuItem,
   ElFooter,
   ElMessage,
-  // ElFormItem,
-  // ElOption,
   UploadImg,
   UploadImgs,
   UploadFile,
@@ -121,7 +87,7 @@ const components = [
   Editor,
   ElCollapse,
   ElCollapseItem,
-  ElCard,
+  ElCard
 ]
 
 // 参考 http://www.form-create.com/v3/element-ui/auto-import.html 文档

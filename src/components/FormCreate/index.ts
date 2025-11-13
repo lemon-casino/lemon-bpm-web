@@ -1,11 +1,11 @@
 import type { App, Plugin } from 'vue'
-import formCreate from "@form-create/element-ui"
+import formCreate from '@form-create/element-ui'
 import { ElTreeSelect } from 'element-plus'
 import { useFormCreateDesigner } from './src/useFormCreateDesigner'
-import { useApiSelect } from './src/components/useApiSelect'
+import { createApiSelectComponent } from './src/components/createApiSelect'
 import { useSelectRule } from './src/config/index'
 
-export { useFormCreateDesigner, useApiSelect, useSelectRule }
+export { useFormCreateDesigner, createApiSelectComponent, useSelectRule }
 
 export default {
   install(app: App) {
@@ -13,4 +13,3 @@ export default {
     app.component('ElTreeSelect', ElTreeSelect)
   }
 } as Plugin
-
