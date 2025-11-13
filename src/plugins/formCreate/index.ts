@@ -68,21 +68,6 @@ import { useApiSelect } from '@/components/FormCreate'
 import { Editor } from '@/components/Editor'
 import DictSelect from '@/components/FormCreate/src/components/DictSelect.vue'
 
-type PluginCounters = {
-  moduleEvaluations: number
-  setupInvocations: number
-}
-
-const formCreateDebugNamespace = (globalThis as Record<string, unknown>).__formCreateDebug ??=
-  {}
-const pluginCounters = (formCreateDebugNamespace.plugin ??= {
-  moduleEvaluations: 0,
-  setupInvocations: 0,
-} as PluginCounters)
-
-pluginCounters.moduleEvaluations += 1
-console.debug('[plugins/formCreate] module evaluated', pluginCounters.moduleEvaluations)
-
 const UserSelect = useApiSelect({
   name: 'UserSelect',
   labelField: 'nickname',
@@ -141,8 +126,6 @@ const components = [
 
 // 参考 http://www.form-create.com/v3/element-ui/auto-import.html 文档
 export const setupFormCreate = (app: App<Element>) => {
-  pluginCounters.setupInvocations += 1
-  console.debug('[plugins/formCreate] setupFormCreate called', pluginCounters.setupInvocations)
   components.forEach((component) => {
     if (component.name) {
       app.component(component.name, component)
