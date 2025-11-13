@@ -424,42 +424,22 @@ const getApprovalDetail = async (isFromRefresh = false) => {
             // 刷新表单
             fApi.value.refresh()
             console.log('表单内容已更新')
-            
+
             // 获取表单字段权限并重新设置
             const formFieldsPermission = data.formFieldsPermission
-            if (formFieldsPermission) {
-              // 清空可编辑字段列表
-              writableFields.splice(0)
-              
-              // 重置所有字段为只读
-              fApi.value?.btn.show(false)
-              fApi.value?.resetBtn.show(false)
-              //@ts-ignore
-              fApi.value?.disabled(true)
-              
-              // 先将所有字段设为可见，解决字段隐藏后无法重新显示的问题
-              if (detailForm.value.rule && detailForm.value.rule.length > 0) {
-                detailForm.value.rule.forEach(rule => {
-                  if (rule.field) {
-                    //@ts-ignore
-                    fApi.value?.hidden(false, rule.field)
-                  }
-                })
-              }
-              
-              // 设置字段权限
-              if (isAdmin.value) {
-                enableAllFieldsForAdmin()
-              } else {
-                Object.keys(formFieldsPermission).forEach((item) => {
-                  setFieldPermission(item, formFieldsPermission[item])
-                })
-              }
-              
-              // 打印表单权限信息（刷新后）
-              console.log('刷新后的表单权限信息:')
-              printFormFieldsPermission(formFieldsPermission)
-            }
+
+            // 清空可编辑字段列表
+            writableFields.splice(0)
+
+            // 重置按钮状态，并应用字段权限
+            fApi.value?.btn.show(false)
+            fApi.value?.resetBtn.show(false)
+
+            const appliedPermissions = applyFormFieldPermissions(formFieldsPermission)
+
+            // 打印表单权限信息（刷新后）
+            console.log('刷新后的表单权限信息:')
+            printFormFieldsPermission(appliedPermissions)
           }
           
           // 更新流程图
@@ -492,26 +472,16 @@ const getApprovalDetail = async (isFromRefresh = false) => {
           processDefinition.value.formFields,
           processInstance.value.formVariables
         )
+        lastFieldPermissions.clear()
       }
       nextTick().then(() => {
         fApi.value?.btn.show(false)
         fApi.value?.resetBtn.show(false)
-        //@ts-ignore
-        fApi.value?.disabled(true)
-        
-        // 判断是否是管理员，如果是管理员，允许所有表单字段可编辑
-        if (isAdmin.value) {
-          enableAllFieldsForAdmin()
-        } 
-        // 否则正常设置表单字段权限
-        else if (formFieldsPermission) {
-          Object.keys(data.formFieldsPermission).forEach((item) => {
-            setFieldPermission(item, formFieldsPermission[item])
-          })
-        }
-        
+
+        const appliedPermissions = applyFormFieldPermissions(formFieldsPermission)
+
         // 打印表单字段权限信息
-        printFormFieldsPermission(formFieldsPermission)
+        printFormFieldsPermission(appliedPermissions)
       })
     } else {
       // 注意：data.processDefinition.formCustomViewPath 是组件的全路径，例如说：/crm/contract/detail/index.vue
@@ -555,29 +525,9 @@ const getProcessModelView = async () => {
 // 审批节点信息
 const activityNodes = ref<ProcessInstanceApi.ApprovalNodeInfo[]>([])
 /**
- * 设置表单权限
- */
-const setFieldPermission = (field: string, permission: string) => {
-  if (permission === FieldPermissionType.READ) {
-    //@ts-ignore
-    fApi.value?.disabled(true, field)
-  }
-  if (permission === FieldPermissionType.WRITE) {
-    //@ts-ignore
-    fApi.value?.disabled(false, field)
-    // 加入可以编辑的字段
-    writableFields.push(field)
-  }
-  if (permission === FieldPermissionType.NONE) {
-    //@ts-ignore
-    fApi.value?.hidden(true, field)
-  }
-}
-
-/**
  * 打印表单字段权限信息
  */
-const printFormFieldsPermission = (formFieldsPermission: Record<string, string>) => {
+const printFormFieldsPermission = (formFieldsPermission: Record<string, string> | undefined) => {
   if (!formFieldsPermission) {
     console.log('表单字段权限为空')
     return
@@ -610,33 +560,70 @@ const printFormFieldsPermission = (formFieldsPermission: Record<string, string>)
   console.log('================================')
 }
 
-/**
- * 管理员拥有所有表单字段编辑权限
- */
-const enableAllFieldsForAdmin = () => {
-  if (!fApi.value || !detailForm.value.rule) return;
-  
-  // 清空之前的可编辑字段列表
-  writableFields.splice(0);
-  
-  // 创建一个对象来存储管理员权限信息
-  const adminPermissions: Record<string, string> = {};
-  
-  // 遍历所有表单字段，设置为可编辑状态
-  detailForm.value.rule.forEach(rule => {
-    if (rule.field) {
-      //@ts-ignore
-      fApi.value.disabled(false, rule.field);
-      // 添加到可编辑字段列表中
-      writableFields.push(rule.field);
-      // 记录权限为"可编辑"
-      adminPermissions[rule.field] = FieldPermissionType.WRITE;
+const lastFieldPermissions = new Map<string, FieldPermissionType>()
+
+const updateFieldPermissionState = (field: string, permission: FieldPermissionType) => {
+  const previous = lastFieldPermissions.get(field)
+  if (previous === permission) {
+    return
+  }
+
+  //@ts-ignore
+  fApi.value?.hidden(permission === FieldPermissionType.NONE, field)
+
+  if (permission !== FieldPermissionType.NONE) {
+    //@ts-ignore
+    fApi.value?.disabled(permission !== FieldPermissionType.WRITE, field)
+  } else {
+    //@ts-ignore
+    fApi.value?.disabled(true, field)
+  }
+
+  lastFieldPermissions.set(field, permission)
+}
+
+const applyFormFieldPermissions = (
+  formFieldsPermission?: Record<string, string>
+): Record<string, string> | undefined => {
+  if (!fApi.value || !detailForm.value.rule) {
+    return formFieldsPermission
+  }
+
+  const resolvedPermissions: Record<string, string> = {}
+  const processedFields = new Set<string>()
+  const nextWritableFields: string[] = []
+
+  detailForm.value.rule.forEach((rule: any) => {
+    if (!rule?.field) return
+
+    processedFields.add(rule.field)
+
+    let permission: FieldPermissionType = FieldPermissionType.READ
+
+    if (isAdmin.value) {
+      permission = FieldPermissionType.WRITE
+    } else if (formFieldsPermission && formFieldsPermission[rule.field]) {
+      permission = formFieldsPermission[rule.field] as FieldPermissionType
     }
-  });
-  
-  // 打印管理员模式下的权限信息
-  console.log('管理员模式：所有字段均设为可编辑');
-  printFormFieldsPermission(adminPermissions);
+
+    resolvedPermissions[rule.field] = permission
+
+    if (permission === FieldPermissionType.WRITE) {
+      nextWritableFields.push(rule.field)
+    }
+
+    updateFieldPermissionState(rule.field, permission)
+  })
+
+  writableFields.splice(0, writableFields.length, ...nextWritableFields)
+
+  Array.from(lastFieldPermissions.keys()).forEach((field) => {
+    if (!processedFields.has(field)) {
+      lastFieldPermissions.delete(field)
+    }
+  })
+
+  return resolvedPermissions
 }
 
 /**
