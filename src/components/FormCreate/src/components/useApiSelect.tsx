@@ -4,8 +4,34 @@ import { jsonParse } from '@/utils'
 import { isEmpty } from '@/utils/is'
 import { ApiSelectProps } from '@/components/FormCreate/src/type'
 
+type CacheRecord = {
+  expires: number
+  options: { label: string | number; value: string | number }[]
+}
+
+const CACHE_TTL = 5 * 60 * 1000
+const optionsCache = new Map<string, CacheRecord>()
+const pendingRequests = new Map<string, Promise<void>>()
+
+const buildCacheKey = (
+  url: string,
+  method: string,
+  data: string,
+  remote: boolean,
+  remoteField: string,
+  query?: string | number
+) => {
+  const normalizedUrl = url || ''
+  const normalizedData = data || ''
+  const normalizedQuery = remote ? `${remoteField}:${query ?? ''}` : ''
+  return `${method}::${normalizedUrl}::${normalizedData}::${normalizedQuery}`
+}
+
+const cloneOptions = (
+  items: { label: string | number; value: string | number }[]
+) => items.map((item) => ({ ...item }))
+
 export const useApiSelect = (option: ApiSelectProps) => {
-  console.log('useApiSelect', option)
   return defineComponent({
     name: option.name,
     props: {
@@ -66,6 +92,54 @@ export const useApiSelect = (option: ApiSelectProps) => {
       const loading = ref(false)
       const queryParam = ref<any>()
 
+      const shouldUseCache = () => {
+        return !props.remote && props.method?.toUpperCase() === 'GET' && !!props.url
+      }
+
+      const readFromCache = () => {
+        if (!shouldUseCache()) {
+          return false
+        }
+
+        const cacheKey = buildCacheKey(
+          props.url,
+          props.method,
+          props.data,
+          props.remote,
+          props.remoteField,
+          queryParam.value
+        )
+        const record = optionsCache.get(cacheKey)
+        if (!record || record.expires < Date.now()) {
+          if (record) {
+            optionsCache.delete(cacheKey)
+          }
+          return false
+        }
+
+        options.value = cloneOptions(record.options)
+        return true
+      }
+
+      const saveToCache = () => {
+        if (!shouldUseCache()) {
+          return
+        }
+
+        const cacheKey = buildCacheKey(
+          props.url,
+          props.method,
+          props.data,
+          props.remote,
+          props.remoteField,
+          queryParam.value
+        )
+        optionsCache.set(cacheKey, {
+          expires: Date.now() + CACHE_TTL,
+          options: cloneOptions(options.value)
+        })
+      }
+
       const parseExpression = (data: any, template: string) => {
         if (template.indexOf('${') === -1) {
           return data[template]
@@ -121,33 +195,79 @@ export const useApiSelect = (option: ApiSelectProps) => {
       }
 
       const getOptions = async () => {
+        if (readFromCache()) {
+          return
+        }
+
         options.value = []
         if (isEmpty(props.url)) {
           return
         }
 
-        switch (props.method) {
-          case 'GET': {
-            let url = props.url
-            if (props.remote && queryParam.value !== undefined) {
-              if (url.includes('?')) {
-                url = `${url}&${props.remoteField}=${queryParam.value}`
-              } else {
-                url = `${url}?${props.remoteField}=${queryParam.value}`
+        const cacheKey = buildCacheKey(
+          props.url,
+          props.method,
+          props.data,
+          props.remote,
+          props.remoteField,
+          queryParam.value
+        )
+
+        const executeRequest = async () => {
+          const method = props.method?.toUpperCase() || 'GET'
+          switch (method) {
+            case 'POST': {
+              const data: any = jsonParse(props.data) || {}
+              if (props.remote) {
+                data[props.remoteField] = queryParam.value
               }
+              parseOptions(await request.post({ url: props.url, data }))
+              break
             }
-            parseOptions(await request.get({ url }))
-            break
-          }
-          case 'POST': {
-            const data: any = jsonParse(props.data)
-            if (props.remote) {
-              data[props.remoteField] = queryParam.value
+            case 'GET':
+            default: {
+              let url = props.url
+              if (props.remote && queryParam.value !== undefined) {
+                if (url.includes('?')) {
+                  url = `${url}&${props.remoteField}=${queryParam.value}`
+                } else {
+                  url = `${url}?${props.remoteField}=${queryParam.value}`
+                }
+              }
+              parseOptions(await request.get({ url }))
             }
-            parseOptions(await request.post({ url: props.url, data }))
-            break
           }
+          saveToCache()
         }
+
+        if (pendingRequests.has(cacheKey)) {
+          await pendingRequests.get(cacheKey)!
+          if (!readFromCache()) {
+            await executeRequest()
+          }
+          return
+        }
+
+        const requestPromise = executeRequest().finally(() => {
+          pendingRequests.delete(cacheKey)
+        })
+        pendingRequests.set(cacheKey, requestPromise)
+        await requestPromise
+      }
+
+      const refreshOptions = async () => {
+        if (shouldUseCache()) {
+          const cacheKey = buildCacheKey(
+            props.url,
+            props.method,
+            props.data,
+            props.remote,
+            props.remoteField,
+            queryParam.value
+          )
+          optionsCache.delete(cacheKey)
+        }
+        await getOptions()
       }
 
       const remoteMethod = async (query: any) => {
@@ -157,7 +277,7 @@ export const useApiSelect = (option: ApiSelectProps) => {
         loading.value = true
         try {
           queryParam.value = query
-          await getOptions()
+          await refreshOptions()
         } finally {
           loading.value = false
         }
