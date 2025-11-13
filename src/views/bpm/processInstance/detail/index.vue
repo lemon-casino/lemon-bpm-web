@@ -562,6 +562,15 @@ const printFormFieldsPermission = (formFieldsPermission: Record<string, string> 
 
 const lastFieldPermissions = new Map<string, FieldPermissionType>()
 
+const resetFieldPermissionState = (field: string) => {
+  if (!fApi.value) return
+  //@ts-ignore
+  fApi.value?.hidden(false, field)
+  //@ts-ignore
+  fApi.value?.disabled(false, field)
+  lastFieldPermissions.delete(field)
+}
+
 const updateFieldPermissionState = (field: string, permission: FieldPermissionType) => {
   const previous = lastFieldPermissions.get(field)
   if (previous === permission) {
@@ -590,40 +599,48 @@ const applyFormFieldPermissions = (
   }
 
   const resolvedPermissions: Record<string, string> = {}
-  const processedFields = new Set<string>()
   const nextWritableFields: string[] = []
 
-  detailForm.value.rule.forEach((rule: any) => {
-    if (!rule?.field) return
+  if (isAdmin.value) {
+    detailForm.value.rule.forEach((rule: any) => {
+      if (!rule?.field) return
 
-    processedFields.add(rule.field)
-
-    let permission: FieldPermissionType = FieldPermissionType.READ
-
-    if (isAdmin.value) {
-      permission = FieldPermissionType.WRITE
-    } else if (formFieldsPermission && formFieldsPermission[rule.field]) {
-      permission = formFieldsPermission[rule.field] as FieldPermissionType
-    }
-
-    resolvedPermissions[rule.field] = permission
-
-    if (permission === FieldPermissionType.WRITE) {
+      updateFieldPermissionState(rule.field, FieldPermissionType.WRITE)
+      resolvedPermissions[rule.field] = FieldPermissionType.WRITE
       nextWritableFields.push(rule.field)
-    }
+    })
+  } else if (formFieldsPermission) {
+    const permissionEntries = Object.entries(formFieldsPermission)
 
-    updateFieldPermissionState(rule.field, permission)
-  })
+    permissionEntries.forEach(([field, permission]) => {
+      const normalizedPermission = permission as FieldPermissionType
+      resolvedPermissions[field] = normalizedPermission
+
+      if (normalizedPermission === FieldPermissionType.WRITE) {
+        nextWritableFields.push(field)
+      }
+
+      updateFieldPermissionState(field, normalizedPermission)
+    })
+
+    detailForm.value.rule.forEach((rule: any) => {
+      if (!rule?.field) return
+      if (!formFieldsPermission[rule.field] && lastFieldPermissions.has(rule.field)) {
+        resetFieldPermissionState(rule.field)
+      }
+    })
+  } else {
+    detailForm.value.rule.forEach((rule: any) => {
+      if (!rule?.field) return
+      if (lastFieldPermissions.has(rule.field)) {
+        resetFieldPermissionState(rule.field)
+      }
+    })
+  }
 
   writableFields.splice(0, writableFields.length, ...nextWritableFields)
 
-  Array.from(lastFieldPermissions.keys()).forEach((field) => {
-    if (!processedFields.has(field)) {
-      lastFieldPermissions.delete(field)
-    }
-  })
-
-  return resolvedPermissions
+  return Object.keys(resolvedPermissions).length > 0 ? resolvedPermissions : formFieldsPermission
 }
 
 /**
